@@ -29,11 +29,25 @@ impl RiskValidator {
     pub fn validate(
         &self,
         current_position: Decimal,
+        side: &str,
         requested_qty: Decimal,
         daily_pnl: Decimal,
     ) -> Result<(), RiskError> {
-        let new_position = current_position.abs() + requested_qty.abs();
+        let signed_requested = match side {
+            "Buy" => requested_qty,
+            "Sell" => -requested_qty,
+            _ => requested_qty,
+        };
+
+        let new_position = current_position + signed_requested;
         if new_position > self.max_position_size {
+            return Err(RiskError::PositionLimitExceeded {
+                current: current_position,
+                requested: requested_qty,
+                max: self.max_position_size,
+            });
+        }
+        if new_position < -self.max_position_size {
             return Err(RiskError::PositionLimitExceeded {
                 current: current_position,
                 requested: requested_qty,
@@ -68,33 +82,70 @@ mod tests {
 
     #[test]
     fn approves_within_limits() {
-        assert!(validator().validate(dec("0.0"), dec("0.5"), dec("0.0")).is_ok());
+        assert!(
+            validator()
+                .validate(dec("0.0"), "Buy", dec("0.5"), dec("0.0"))
+                .is_ok()
+        );
     }
 
     #[test]
     fn rejects_position_over_limit() {
-        let err = validator().validate(dec("0.8"), dec("0.5"), dec("0.0")).unwrap_err();
+        let err = validator()
+            .validate(dec("0.8"), "Buy", dec("0.5"), dec("0.0"))
+            .unwrap_err();
         assert!(matches!(err, RiskError::PositionLimitExceeded { .. }));
     }
 
     #[test]
     fn rejects_daily_loss_exceeded() {
-        let err = validator().validate(dec("0.0"), dec("0.1"), dec("-150.0")).unwrap_err();
+        let err = validator()
+            .validate(dec("0.0"), "Buy", dec("0.1"), dec("-150.0"))
+            .unwrap_err();
         assert!(matches!(err, RiskError::DailyLossExceeded { .. }));
     }
 
     #[test]
     fn approves_with_positive_pnl() {
-        assert!(validator().validate(dec("0.0"), dec("0.5"), dec("50.0")).is_ok());
+        assert!(
+            validator()
+                .validate(dec("0.0"), "Buy", dec("0.5"), dec("50.0"))
+                .is_ok()
+        );
     }
 
     #[test]
     fn approves_at_exactly_max_position() {
-        assert!(validator().validate(dec("0.5"), dec("0.5"), dec("0.0")).is_ok());
+        assert!(
+            validator()
+                .validate(dec("0.5"), "Buy", dec("0.5"), dec("0.0"))
+                .is_ok()
+        );
     }
 
     #[test]
     fn approves_at_exactly_max_loss() {
-        assert!(validator().validate(dec("0.0"), dec("0.1"), dec("-100.0")).is_ok());
+        assert!(
+            validator()
+                .validate(dec("0.0"), "Buy", dec("0.1"), dec("-100.0"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn allows_reducing_long_with_sell() {
+        assert!(
+            validator()
+                .validate(dec("0.8"), "Sell", dec("0.5"), dec("0.0"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_short_over_limit_with_sell() {
+        let err = validator()
+            .validate(dec("-0.8"), "Sell", dec("0.5"), dec("0.0"))
+            .unwrap_err();
+        assert!(matches!(err, RiskError::PositionLimitExceeded { .. }));
     }
 }
