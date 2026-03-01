@@ -31,7 +31,7 @@ Bybit WebSocket v5                                          Bybit REST v5
 | Service | Port | Role |
 |---------|------|------|
 | **market-data** | 50051 | Connects to Bybit WebSocket v5, broadcasts klines/trades/orderbook via gRPC server streaming |
-| **strategy** | 50052 | Subscribes to kline stream, runs SMA crossover detection, emits order signals |
+| **strategy** | client-only | Subscribes to kline stream, runs SMA crossover detection, emits order signals |
 | **risk** | 50053 | Validates orders against position limits and daily loss, persists decisions to PostgreSQL |
 | **order** | 50054 | Signs and sends orders to Bybit REST v5 API |
 
@@ -89,6 +89,24 @@ psql postgres://moria:moria@localhost:5432/moria -c \
 
 # View distributed traces
 open http://localhost:16686
+```
+
+### 4. Verify Health & Metrics
+
+```bash
+# gRPC health checks
+grpcurl -plaintext -d '{"service":"market_data.MarketDataService"}' \
+  localhost:50051 grpc.health.v1.Health/Check
+grpcurl -plaintext -d '{"service":"risk.RiskService"}' \
+  localhost:50053 grpc.health.v1.Health/Check
+grpcurl -plaintext -d '{"service":"order.OrderService"}' \
+  localhost:50054 grpc.health.v1.Health/Check
+
+# Prometheus metrics endpoints (docker-compose defaults)
+curl -fsS http://localhost:9101/metrics | head
+curl -fsS http://localhost:9102/metrics | head
+curl -fsS http://localhost:9103/metrics | head
+curl -fsS http://localhost:9104/metrics | head
 ```
 
 ### Running locally (without Docker)
@@ -154,10 +172,12 @@ All services are configured via environment variables. See [`.env.example`](.env
 | `KLINE_INTERVAL` | `1` | Kline interval in minutes |
 | `SMA_SHORT_PERIOD` | `10` | Short SMA window (candles) |
 | `SMA_LONG_PERIOD` | `30` | Long SMA window (candles) |
+| `ORDER_QTY` | `0.001` | Order quantity submitted per generated signal |
 | `MAX_POSITION_SIZE` | `1.0` | Maximum position size (base asset) |
 | `MAX_DAILY_LOSS` | `100.0` | Maximum daily loss (quote asset) |
 | `DATABASE_URL` | `postgres://moria:moria@localhost:5432/moria` | PostgreSQL connection |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTel collector (omit to disable export) |
+| `METRICS_ADDR` | — | Optional Prometheus metrics listen address (example: `0.0.0.0:9103`) |
 | `MARKET_DATA_GRPC_ADDR` | `[::1]:50051` | Market data service listen address |
 | `RISK_GRPC_ADDR` | `[::1]:50053` | Risk service listen address |
 | `ORDER_GRPC_ADDR` | `[::1]:50054` | Order service listen address |
@@ -185,10 +205,12 @@ Every order signal passes through the risk service before execution:
 
 | Rule | Behavior |
 |------|----------|
-| **Position limit** | Rejects if `|current_position| + |requested_qty| > MAX_POSITION_SIZE` |
+| **Position limit** | Rejects if resulting position after side-aware delta (`Buy` adds qty, `Sell` subtracts qty) exceeds `±MAX_POSITION_SIZE` |
 | **Daily loss limit** | Rejects if realized daily PnL is below `-MAX_DAILY_LOSS` |
 
 All decisions (approved and rejected) are persisted to the `signals` table with a reason field for rejected orders.
+
+Duplicate `signal_id` requests are treated idempotently: risk returns the previously persisted decision and does not place a second order.
 
 ## Database Schema
 
@@ -209,6 +231,12 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, all services export traces via OTLP/g
 - **Jaeger UI** at `http://localhost:16686` visualizes the full trace chain
 
 Log level is controlled via `RUST_LOG` (default: `info,{service}=debug`).
+
+When `METRICS_ADDR` is set, each service exposes Prometheus metrics at `/metrics`.
+
+## Health Checks
+
+The gRPC services (`market-data`, `risk`, `order`) expose `grpc.health.v1.Health/Check` via `tonic-health`.
 
 ## Development
 

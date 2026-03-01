@@ -45,10 +45,12 @@ services:
       TRADING_PAIR: BTCUSDT
       KLINE_INTERVAL: "1"
       MARKET_DATA_GRPC_ADDR: "0.0.0.0:50051"
+      METRICS_ADDR: "0.0.0.0:9101"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       RUST_LOG: info,market_data=debug
     ports:
       - "50051:50051"
+      - "9101:9101"
     depends_on:
       otel-collector:
         condition: service_started
@@ -61,11 +63,15 @@ services:
       KLINE_INTERVAL: "1"
       SMA_SHORT_PERIOD: "10"
       SMA_LONG_PERIOD: "30"
+      ORDER_QTY: "0.001"
       MARKET_DATA_GRPC_ADDR: market-data:50051
       RISK_GRPC_ADDR: risk:50053
       STRATEGY_GRPC_ADDR: "0.0.0.0:50052"
+      METRICS_ADDR: "0.0.0.0:9102"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       RUST_LOG: info,strategy=debug
+    ports:
+      - "9102:9102"
     depends_on:
       market-data:
         condition: service_started
@@ -81,10 +87,12 @@ services:
       MAX_DAILY_LOSS: "100.0"
       ORDER_GRPC_ADDR: order:50054
       RISK_GRPC_ADDR: "0.0.0.0:50053"
+      METRICS_ADDR: "0.0.0.0:9103"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       RUST_LOG: info,risk=debug
     ports:
       - "50053:50053"
+      - "9103:9103"
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,10 +107,12 @@ services:
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
       BYBIT_REST_URL: https://api-testnet.bybit.com
       ORDER_GRPC_ADDR: "0.0.0.0:50054"
+      METRICS_ADDR: "0.0.0.0:9104"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       RUST_LOG: info,order=debug
     ports:
       - "50054:50054"
+      - "9104:9104"
     depends_on:
       otel-collector:
         condition: service_started
