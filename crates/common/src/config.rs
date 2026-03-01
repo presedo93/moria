@@ -1,0 +1,65 @@
+use serde::Deserialize;
+use std::env;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    pub bybit_api_key: String,
+    pub bybit_api_secret: String,
+    pub bybit_ws_url: String,
+    pub bybit_rest_url: String,
+    pub trading_pair: String,
+    pub kline_interval: String,
+    pub sma_short_period: usize,
+    pub sma_long_period: usize,
+    pub max_position_size: f64,
+    pub max_daily_loss: f64,
+    pub database_url: String,
+    pub otel_endpoint: String,
+    pub market_data_grpc_addr: String,
+    pub strategy_grpc_addr: String,
+    pub risk_grpc_addr: String,
+    pub order_grpc_addr: String,
+}
+
+impl Config {
+    pub fn from_env() -> Self {
+        Self {
+            bybit_api_key: env::var("BYBIT_API_KEY").unwrap_or_default(),
+            bybit_api_secret: env::var("BYBIT_API_SECRET").unwrap_or_default(),
+            bybit_ws_url: env::var("BYBIT_WS_URL")
+                .unwrap_or_else(|_| "wss://stream-testnet.bybit.com/v5/public/linear".into()),
+            bybit_rest_url: env::var("BYBIT_REST_URL")
+                .unwrap_or_else(|_| "https://api-testnet.bybit.com".into()),
+            trading_pair: env::var("TRADING_PAIR").unwrap_or_else(|_| "BTCUSDT".into()),
+            kline_interval: env::var("KLINE_INTERVAL").unwrap_or_else(|_| "1".into()),
+            sma_short_period: env::var("SMA_SHORT_PERIOD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            sma_long_period: env::var("SMA_LONG_PERIOD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+            max_position_size: env::var("MAX_POSITION_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0),
+            max_daily_loss: env::var("MAX_DAILY_LOSS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100.0),
+            database_url: env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://moria:moria@localhost:5432/moria".into()),
+            otel_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:4317".into()),
+            market_data_grpc_addr: env::var("MARKET_DATA_GRPC_ADDR")
+                .unwrap_or_else(|_| "[::1]:50051".into()),
+            strategy_grpc_addr: env::var("STRATEGY_GRPC_ADDR")
+                .unwrap_or_else(|_| "[::1]:50052".into()),
+            risk_grpc_addr: env::var("RISK_GRPC_ADDR")
+                .unwrap_or_else(|_| "[::1]:50053".into()),
+            order_grpc_addr: env::var("ORDER_GRPC_ADDR")
+                .unwrap_or_else(|_| "[::1]:50054".into()),
+        }
+    }
+}

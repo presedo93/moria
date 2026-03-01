@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package risk;
+
+import "order.proto";
+
+message RiskDecision {
+  bool approved = 1;
+  string reason = 2;
+  string signal_id = 3;
+}
+
+service RiskService {
+  rpc ValidateOrder(order.OrderRequest) returns (RiskDecision);
+}

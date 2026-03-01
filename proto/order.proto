@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package order;
+
+message OrderRequest {
+  string signal_id = 1;
+  string symbol = 2;
+  string side = 3;
+  string order_type = 4;
+  double price = 5;
+  double qty = 6;
+}
+
+message OrderResponse {
+  string order_id = 1;
+  string status = 2;
+  string message = 3;
+}
+
+service OrderService {
+  rpc PlaceOrder(OrderRequest) returns (OrderResponse);
+}
