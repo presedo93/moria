@@ -1,0 +1,15 @@
+[package]
+name = "moria-strategy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+moria-proto = { path = "../proto" }
+moria-common = { path = "../common" }
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
