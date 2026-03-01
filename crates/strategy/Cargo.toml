@@ -14,3 +14,4 @@ chrono.workspace = true
 rust_decimal.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+metrics.workspace = true

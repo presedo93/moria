@@ -1,12 +1,14 @@
 use crate::sma::{CrossoverSignal, SmaCrossover};
 use anyhow::{Context, Result};
+use metrics::counter;
 use moria_proto::{
     market_data::{StreamRequest, market_data_service_client::MarketDataServiceClient},
     order::OrderRequest,
-    risk::{risk_service_client::RiskServiceClient},
+    risk::risk_service_client::RiskServiceClient,
 };
 use rust_decimal::Decimal;
 use std::str::FromStr;
+use std::time::Duration;
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
 use tracing::{info, warn};
@@ -41,6 +43,32 @@ impl StrategyEngine {
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
+        const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+        let mut attempt = 0u32;
+
+        loop {
+            match self.run_once().await {
+                Ok(()) => {
+                    attempt = 0;
+                    counter!("strategy_reconnect_total", "reason" => "stream_closed").increment(1);
+                    warn!("Kline stream ended, reconnecting");
+                }
+                Err(e) => {
+                    attempt = attempt.saturating_add(1);
+                    counter!("strategy_reconnect_total", "reason" => "error").increment(1);
+                    let delay = std::cmp::min(
+                        RECONNECT_BASE_DELAY * 2u32.saturating_pow(attempt - 1),
+                        MAX_RECONNECT_DELAY,
+                    );
+                    warn!(?e, attempt, ?delay, "Strategy loop failed, reconnecting");
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+
+    async fn run_once(&mut self) -> Result<()> {
         let market_channel = Channel::from_shared(format!("http://{}", self.market_data_addr))?
             .connect()
             .await
@@ -98,14 +126,14 @@ impl StrategyEngine {
 
             match signal {
                 CrossoverSignal::Buy => {
+                    counter!("strategy_signals_total", "side" => "Buy").increment(1);
                     info!(%close, "BUY signal detected");
-                    self.send_signal("Buy", close, risk_client.clone())
-                        .await;
+                    self.send_signal("Buy", close, risk_client.clone()).await;
                 }
                 CrossoverSignal::Sell => {
+                    counter!("strategy_signals_total", "side" => "Sell").increment(1);
                     info!(%close, "SELL signal detected");
-                    self.send_signal("Sell", close, risk_client.clone())
-                        .await;
+                    self.send_signal("Sell", close, risk_client.clone()).await;
                 }
                 CrossoverSignal::None => {}
             }
@@ -134,12 +162,15 @@ impl StrategyEngine {
             Ok(response) => {
                 let decision = response.into_inner();
                 if decision.approved {
+                    counter!("strategy_risk_decision_total", "decision" => "approved").increment(1);
                     info!(signal_id, "Order approved by risk service");
                 } else {
+                    counter!("strategy_risk_decision_total", "decision" => "rejected").increment(1);
                     warn!(signal_id, reason = %decision.reason, "Order rejected by risk service");
                 }
             }
             Err(e) => {
+                counter!("strategy_risk_decision_total", "decision" => "error").increment(1);
                 warn!(?e, signal_id, "Failed to contact risk service");
             }
         }

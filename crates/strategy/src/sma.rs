@@ -17,7 +17,10 @@ pub struct SmaCrossover {
 
 impl SmaCrossover {
     pub fn new(short_period: usize, long_period: usize) -> Self {
-        assert!(short_period < long_period, "short period must be less than long period");
+        assert!(
+            short_period < long_period,
+            "short period must be less than long period"
+        );
         Self {
             short_period,
             long_period,
@@ -146,7 +149,7 @@ mod tests {
         sma.push(dec("30"));
 
         assert_eq!(sma.short_sma(), Some(dec("25"))); // (20+30)/2
-        assert_eq!(sma.long_sma(), Some(dec("20")));   // (10+20+30)/3
+        assert_eq!(sma.long_sma(), Some(dec("20"))); // (10+20+30)/3
     }
 
     #[test]
@@ -158,7 +161,7 @@ mod tests {
         sma.push(dec("40")); // window is now [20, 30, 40]
 
         assert_eq!(sma.short_sma(), Some(dec("35"))); // (30+40)/2
-        assert_eq!(sma.long_sma(), Some(dec("30")));   // (20+30+40)/3
+        assert_eq!(sma.long_sma(), Some(dec("30"))); // (20+30+40)/3
     }
 
     #[test]

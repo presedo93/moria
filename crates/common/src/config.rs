@@ -13,10 +13,12 @@ pub struct Config {
     pub kline_interval: String,
     pub sma_short_period: usize,
     pub sma_long_period: usize,
+    pub order_qty: Decimal,
     pub max_position_size: Decimal,
     pub max_daily_loss: Decimal,
     pub database_url: String,
     pub otel_endpoint: String,
+    pub metrics_addr: Option<String>,
     pub market_data_grpc_addr: String,
     pub strategy_grpc_addr: String,
     pub risk_grpc_addr: String,
@@ -42,6 +44,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
+            order_qty: env::var("ORDER_QTY")
+                .ok()
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from_str("0.001").expect("valid decimal")),
             max_position_size: env::var("MAX_POSITION_SIZE")
                 .ok()
                 .and_then(|v| Decimal::from_str(&v).ok())
@@ -54,14 +60,20 @@ impl Config {
                 .unwrap_or_else(|_| "postgres://moria:moria@localhost:5432/moria".into()),
             otel_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://localhost:4317".into()),
+            metrics_addr: env::var("METRICS_ADDR").ok().and_then(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }),
             market_data_grpc_addr: env::var("MARKET_DATA_GRPC_ADDR")
                 .unwrap_or_else(|_| "[::1]:50051".into()),
             strategy_grpc_addr: env::var("STRATEGY_GRPC_ADDR")
                 .unwrap_or_else(|_| "[::1]:50052".into()),
-            risk_grpc_addr: env::var("RISK_GRPC_ADDR")
-                .unwrap_or_else(|_| "[::1]:50053".into()),
-            order_grpc_addr: env::var("ORDER_GRPC_ADDR")
-                .unwrap_or_else(|_| "[::1]:50054".into()),
+            risk_grpc_addr: env::var("RISK_GRPC_ADDR").unwrap_or_else(|_| "[::1]:50053".into()),
+            order_grpc_addr: env::var("ORDER_GRPC_ADDR").unwrap_or_else(|_| "[::1]:50054".into()),
         }
     }
 }

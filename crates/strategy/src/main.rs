@@ -3,26 +3,26 @@ mod sma;
 
 use anyhow::Result;
 use moria_common::Config;
-use rust_decimal::Decimal;
-use std::str::FromStr;
 use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::from_env();
     moria_common::telemetry::init_tracing("strategy")?;
+    moria_common::telemetry::init_metrics("strategy", config.metrics_addr.as_deref())?;
 
     info!(
         pair = %config.trading_pair,
         short = config.sma_short_period,
         long = config.sma_long_period,
+        qty = %config.order_qty,
         "Starting strategy service"
     );
 
     let mut engine = engine::StrategyEngine::new(
         config.trading_pair,
         config.kline_interval,
-        Decimal::from_str("0.001").expect("valid decimal literal"),
+        config.order_qty,
         config.sma_short_period,
         config.sma_long_period,
         config.market_data_grpc_addr,
