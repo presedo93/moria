@@ -15,4 +15,6 @@ serde_json.workspace = true
 futures.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+metrics.workspace = true
+tonic-health.workspace = true
 url = "2"

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
+use metrics::counter;
 use moria_proto::market_data::{Kline, Level, OrderbookSnapshot, Trade};
 use serde::Deserialize;
 use std::time::Duration;
@@ -46,10 +47,13 @@ impl BybitWs {
         loop {
             match self.connect_and_stream().await {
                 Ok(()) => {
+                    counter!("market_data_ws_reconnect_total", "reason" => "stream_closed")
+                        .increment(1);
                     info!("WebSocket connection closed normally, reconnecting");
                     attempt = 0;
                 }
                 Err(e) => {
+                    counter!("market_data_ws_reconnect_total", "reason" => "error").increment(1);
                     attempt = attempt.saturating_add(1);
                     let delay = std::cmp::min(
                         RECONNECT_BASE_DELAY * 2u32.saturating_pow(attempt - 1),
@@ -161,6 +165,7 @@ impl BybitWs {
                         timestamp: k.start,
                     };
                     let _ = self.kline_tx.send(kline);
+                    counter!("market_data_ws_kline_ingested_total").increment(1);
                 }
             }
             Err(e) => warn!(?e, "Failed to parse kline message"),
@@ -180,6 +185,7 @@ impl BybitWs {
                         timestamp: t.timestamp,
                     };
                     let _ = self.trade_tx.send(trade);
+                    counter!("market_data_ws_trade_ingested_total").increment(1);
                 }
             }
             Err(e) => warn!(?e, "Failed to parse trade message"),
@@ -213,6 +219,7 @@ impl BybitWs {
                     timestamp: msg.ts,
                 };
                 let _ = self.orderbook_tx.send(snapshot);
+                counter!("market_data_ws_orderbook_ingested_total").increment(1);
             }
             Err(e) => warn!(?e, "Failed to parse orderbook message"),
         }

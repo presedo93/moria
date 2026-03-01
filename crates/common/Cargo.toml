@@ -13,3 +13,5 @@ opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
 anyhow.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true

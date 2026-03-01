@@ -1,4 +1,5 @@
 use crate::bybit_rest::BybitRestClient;
+use metrics::{counter, histogram};
 use moria_proto::order::{
     OrderRequest, OrderResponse,
     order_service_server::{OrderService, OrderServiceServer},
@@ -6,6 +7,7 @@ use moria_proto::order::{
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::info;
 
@@ -31,6 +33,9 @@ impl OrderService for OrderServer {
         &self,
         request: Request<OrderRequest>,
     ) -> Result<Response<OrderResponse>, Status> {
+        let started = Instant::now();
+        counter!("order_place_order_requests_total").increment(1);
+
         let order = request.into_inner();
         info!(
             signal_id = %order.signal_id,
@@ -51,6 +56,9 @@ impl OrderService for OrderServer {
             .place_order(&order.symbol, &order.side, &order.order_type, price, qty)
             .await
             .map_err(|e| Status::internal(format!("order placement failed: {e}")))?;
+
+        counter!("order_place_order_result_total", "status" => result.status.clone()).increment(1);
+        histogram!("order_place_order_latency_seconds").record(started.elapsed().as_secs_f64());
 
         Ok(Response::new(OrderResponse {
             order_id: result.order_id,

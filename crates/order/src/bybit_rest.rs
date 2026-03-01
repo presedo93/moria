@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use hmac::{Hmac, Mac};
+use metrics::{counter, histogram};
 use rust_decimal::Decimal;
 use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -67,6 +68,7 @@ impl BybitRestClient {
         let body_str = body.to_string();
         let timestamp = now_ms();
         let signature = self.sign(timestamp, &body_str);
+        let started = std::time::Instant::now();
 
         let url = format!("{}/v5/order/create", self.base_url);
         info!(%url, %symbol, %side, %order_type, %qty, "Placing order");
@@ -87,11 +89,13 @@ impl BybitRestClient {
             .json::<serde_json::Value>()
             .await
             .context("Failed to parse order response")?;
+        histogram!("order_bybit_http_latency_seconds").record(started.elapsed().as_secs_f64());
 
         let ret_code = response["retCode"].as_i64().unwrap_or(-1);
         let ret_msg = response["retMsg"].as_str().unwrap_or("unknown");
 
         if ret_code == 0 {
+            counter!("order_bybit_submit_total", "result" => "ok").increment(1);
             let order_id = response["result"]["orderId"]
                 .as_str()
                 .unwrap_or("")
@@ -103,6 +107,7 @@ impl BybitRestClient {
                 message: ret_msg.to_string(),
             })
         } else {
+            counter!("order_bybit_submit_total", "result" => "rejected").increment(1);
             warn!(ret_code, %ret_msg, "Order rejected by Bybit");
             Ok(OrderResult {
                 order_id: String::new(),

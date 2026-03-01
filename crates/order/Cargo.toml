@@ -18,3 +18,5 @@ serde_json.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+metrics.workspace = true
+tonic-health.workspace = true

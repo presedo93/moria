@@ -17,6 +17,7 @@ edition = "2024"
 # gRPC / Protobuf
 tonic = "0.13"
 tonic-build = "0.13"
+tonic-health = "0.13"
 prost = "0.13"
 prost-types = "0.13"
 
@@ -31,7 +32,7 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 reqwest = { version = "0.12", features = ["json"] }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "uuid", "chrono", "rust_decimal"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "uuid", "chrono", "rust_decimal", "macros"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -44,6 +45,8 @@ tracing-opentelemetry = "0.28"
 opentelemetry = "0.27"
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.17"
 
 # Crypto (Bybit signing)
 hmac = "0.12"
