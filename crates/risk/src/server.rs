@@ -3,7 +3,9 @@ use moria_proto::{
     order::{OrderRequest, order_service_client::OrderServiceClient},
     risk::{RiskDecision, risk_service_server::{RiskService, RiskServiceServer}},
 };
+use rust_decimal::Decimal;
 use sqlx::PgPool;
+use std::str::FromStr;
 use tonic::{Request, Response, Status, transport::Channel};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -32,6 +34,12 @@ impl RiskServer {
     }
 }
 
+#[allow(clippy::result_large_err)]
+fn parse_decimal(field: &str, value: &str) -> Result<Decimal, Status> {
+    Decimal::from_str(value)
+        .map_err(|e| Status::invalid_argument(format!("invalid {field}: {e}")))
+}
+
 #[tonic::async_trait]
 impl RiskService for RiskServer {
     async fn validate_order(
@@ -44,6 +52,9 @@ impl RiskService for RiskServer {
         let signal_uuid = Uuid::parse_str(&signal_id)
             .map_err(|e| Status::invalid_argument(format!("invalid signal_id: {e}")))?;
 
+        let price = parse_decimal("price", &order.price)?;
+        let qty = parse_decimal("qty", &order.qty)?;
+
         // Fetch current risk state
         let current_position = db::get_position_qty(&self.pool, &order.symbol)
             .await
@@ -54,7 +65,7 @@ impl RiskService for RiskServer {
             .map_err(|e| Status::internal(format!("db error: {e}")))?;
 
         // Validate
-        let decision = match self.validator.validate(current_position, order.qty, daily_pnl) {
+        let decision = match self.validator.validate(current_position, qty, daily_pnl) {
             Ok(()) => {
                 info!(signal_id, symbol = %order.symbol, side = %order.side, "Order approved");
 
@@ -65,8 +76,8 @@ impl RiskService for RiskServer {
                     &order.symbol,
                     &order.side,
                     &order.order_type,
-                    order.price,
-                    order.qty,
+                    price,
+                    qty,
                     true,
                     None,
                 )
@@ -79,8 +90,8 @@ impl RiskService for RiskServer {
                     symbol: order.symbol,
                     side: order.side,
                     order_type: order.order_type,
-                    price: order.price,
-                    qty: order.qty,
+                    price: price.to_string(),
+                    qty: qty.to_string(),
                 };
                 let mut order_client = self.order_client.clone();
                 match order_client.place_order(order_req).await {
@@ -115,8 +126,8 @@ impl RiskService for RiskServer {
                     &order.symbol,
                     &order.side,
                     &order.order_type,
-                    order.price,
-                    order.qty,
+                    price,
+                    qty,
                     false,
                     Some(&reason),
                 )

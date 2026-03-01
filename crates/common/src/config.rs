@@ -1,5 +1,7 @@
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::env;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -11,8 +13,8 @@ pub struct Config {
     pub kline_interval: String,
     pub sma_short_period: usize,
     pub sma_long_period: usize,
-    pub max_position_size: f64,
-    pub max_daily_loss: f64,
+    pub max_position_size: Decimal,
+    pub max_daily_loss: Decimal,
     pub database_url: String,
     pub otel_endpoint: String,
     pub market_data_grpc_addr: String,
@@ -42,12 +44,12 @@ impl Config {
                 .unwrap_or(30),
             max_position_size: env::var("MAX_POSITION_SIZE")
                 .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1.0),
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from(1)),
             max_daily_loss: env::var("MAX_DAILY_LOSS")
                 .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(100.0),
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from(100)),
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgres://moria:moria@localhost:5432/moria".into()),
             otel_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")

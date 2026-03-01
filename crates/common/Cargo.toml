@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+rust_decimal.workspace = true
 serde.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

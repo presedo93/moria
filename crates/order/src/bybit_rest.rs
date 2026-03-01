@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use hmac::{Hmac, Mac};
+use rust_decimal::Decimal;
 use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
@@ -37,8 +38,8 @@ impl BybitRestClient {
         symbol: &str,
         side: &str,
         order_type: &str,
-        price: f64,
-        qty: f64,
+        price: Decimal,
+        qty: Decimal,
     ) -> Result<OrderResult> {
         let body = if order_type == "Limit" {
             serde_json::json!({
@@ -46,8 +47,8 @@ impl BybitRestClient {
                 "symbol": symbol,
                 "side": side,
                 "orderType": order_type,
-                "qty": format!("{qty}"),
-                "price": format!("{price}"),
+                "qty": qty.to_string(),
+                "price": price.to_string(),
                 "timeInForce": "GTC",
                 "positionIdx": 0
             })
@@ -57,7 +58,7 @@ impl BybitRestClient {
                 "symbol": symbol,
                 "side": side,
                 "orderType": "Market",
-                "qty": format!("{qty}"),
+                "qty": qty.to_string(),
                 "timeInForce": "IOC",
                 "positionIdx": 0
             })
@@ -68,7 +69,7 @@ impl BybitRestClient {
         let signature = self.sign(timestamp, &body_str);
 
         let url = format!("{}/v5/order/create", self.base_url);
-        info!(%url, %symbol, %side, %order_type, qty, "Placing order");
+        info!(%url, %symbol, %side, %order_type, %qty, "Placing order");
 
         let response = self
             .client

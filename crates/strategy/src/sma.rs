@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,7 +11,7 @@ pub enum CrossoverSignal {
 pub struct SmaCrossover {
     short_period: usize,
     long_period: usize,
-    prices: VecDeque<f64>,
+    prices: VecDeque<Decimal>,
     prev_short_above_long: Option<bool>,
 }
 
@@ -26,7 +27,7 @@ impl SmaCrossover {
     }
 
     /// Push a new close price and return a crossover signal if one occurred.
-    pub fn push(&mut self, close: f64) -> CrossoverSignal {
+    pub fn push(&mut self, close: Decimal) -> CrossoverSignal {
         self.prices.push_back(close);
         if self.prices.len() > self.long_period {
             self.prices.pop_front();
@@ -56,13 +57,13 @@ impl SmaCrossover {
         signal
     }
 
-    fn compute_sma(&self, period: usize) -> f64 {
+    fn compute_sma(&self, period: usize) -> Decimal {
         let len = self.prices.len();
-        let sum: f64 = self.prices.iter().skip(len - period).sum();
-        sum / period as f64
+        let sum: Decimal = self.prices.iter().skip(len - period).copied().sum();
+        sum / Decimal::from(period)
     }
 
-    pub fn short_sma(&self) -> Option<f64> {
+    pub fn short_sma(&self) -> Option<Decimal> {
         if self.prices.len() >= self.short_period {
             Some(self.compute_sma(self.short_period))
         } else {
@@ -70,7 +71,7 @@ impl SmaCrossover {
         }
     }
 
-    pub fn long_sma(&self) -> Option<f64> {
+    pub fn long_sma(&self) -> Option<Decimal> {
         if self.prices.len() >= self.long_period {
             Some(self.compute_sma(self.long_period))
         } else {
@@ -82,15 +83,20 @@ impl SmaCrossover {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
+
+    fn dec(s: &str) -> Decimal {
+        Decimal::from_str(s).unwrap()
+    }
 
     #[test]
     fn no_signal_until_enough_data() {
         let mut sma = SmaCrossover::new(2, 4);
-        assert_eq!(sma.push(10.0), CrossoverSignal::None);
-        assert_eq!(sma.push(11.0), CrossoverSignal::None);
-        assert_eq!(sma.push(12.0), CrossoverSignal::None);
+        assert_eq!(sma.push(dec("10")), CrossoverSignal::None);
+        assert_eq!(sma.push(dec("11")), CrossoverSignal::None);
+        assert_eq!(sma.push(dec("12")), CrossoverSignal::None);
         // 4th price: first time we have both SMAs, establishes baseline
-        assert_eq!(sma.push(13.0), CrossoverSignal::None);
+        assert_eq!(sma.push(dec("13")), CrossoverSignal::None);
     }
 
     #[test]
@@ -98,14 +104,13 @@ mod tests {
         let mut sma = SmaCrossover::new(2, 4);
 
         // Declining prices: short SMA < long SMA
-        // Prices: 20, 18, 16, 14 → short_sma(2)=(16+14)/2=15, long_sma(4)=17
-        sma.push(20.0);
-        sma.push(18.0);
-        sma.push(16.0);
-        assert_eq!(sma.push(14.0), CrossoverSignal::None); // baseline: short < long
+        sma.push(dec("20"));
+        sma.push(dec("18"));
+        sma.push(dec("16"));
+        assert_eq!(sma.push(dec("14")), CrossoverSignal::None); // baseline: short < long
 
-        // Now price jumps up: 14, 16, 14, 25 → short_sma(2)=(14+25)/2=19.5, long_sma(4)=17.25
-        assert_eq!(sma.push(25.0), CrossoverSignal::Buy);
+        // Now price jumps up
+        assert_eq!(sma.push(dec("25")), CrossoverSignal::Buy);
     }
 
     #[test]
@@ -113,14 +118,13 @@ mod tests {
         let mut sma = SmaCrossover::new(2, 4);
 
         // Rising prices: short SMA > long SMA
-        // Prices: 10, 12, 14, 16 → short=(14+16)/2=15, long=13
-        sma.push(10.0);
-        sma.push(12.0);
-        sma.push(14.0);
-        assert_eq!(sma.push(16.0), CrossoverSignal::None); // baseline: short > long
+        sma.push(dec("10"));
+        sma.push(dec("12"));
+        sma.push(dec("14"));
+        assert_eq!(sma.push(dec("16")), CrossoverSignal::None); // baseline: short > long
 
-        // Price drops: 12, 14, 16, 5 → short=(16+5)/2=10.5, long=(12+14+16+5)/4=11.75
-        assert_eq!(sma.push(5.0), CrossoverSignal::Sell);
+        // Price drops
+        assert_eq!(sma.push(dec("5")), CrossoverSignal::Sell);
     }
 
     #[test]
@@ -128,8 +132,8 @@ mod tests {
         let mut sma = SmaCrossover::new(2, 4);
 
         // Consistently rising: short always above long
-        for price in [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0] {
-            let signal = sma.push(price);
+        for price in ["10", "11", "12", "13", "14", "15", "16"] {
+            let signal = sma.push(dec(price));
             assert_eq!(signal, CrossoverSignal::None);
         }
     }
@@ -137,24 +141,24 @@ mod tests {
     #[test]
     fn sma_values_correct() {
         let mut sma = SmaCrossover::new(2, 3);
-        sma.push(10.0);
-        sma.push(20.0);
-        sma.push(30.0);
+        sma.push(dec("10"));
+        sma.push(dec("20"));
+        sma.push(dec("30"));
 
-        assert_eq!(sma.short_sma(), Some(25.0)); // (20+30)/2
-        assert_eq!(sma.long_sma(), Some(20.0));   // (10+20+30)/3
+        assert_eq!(sma.short_sma(), Some(dec("25"))); // (20+30)/2
+        assert_eq!(sma.long_sma(), Some(dec("20")));   // (10+20+30)/3
     }
 
     #[test]
     fn window_slides_correctly() {
         let mut sma = SmaCrossover::new(2, 3);
-        sma.push(10.0);
-        sma.push(20.0);
-        sma.push(30.0);
-        sma.push(40.0); // window is now [20, 30, 40]
+        sma.push(dec("10"));
+        sma.push(dec("20"));
+        sma.push(dec("30"));
+        sma.push(dec("40")); // window is now [20, 30, 40]
 
-        assert_eq!(sma.short_sma(), Some(35.0)); // (30+40)/2
-        assert_eq!(sma.long_sma(), Some(30.0));   // (20+30+40)/3
+        assert_eq!(sma.short_sma(), Some(dec("35"))); // (30+40)/2
+        assert_eq!(sma.long_sma(), Some(dec("30")));   // (20+30+40)/3
     }
 
     #[test]

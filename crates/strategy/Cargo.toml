@@ -11,5 +11,6 @@ tokio-stream.workspace = true
 tonic.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+rust_decimal.workspace = true
 tracing.workspace = true
 anyhow.workspace = true

@@ -3,25 +3,25 @@ syntax = "proto3";
 package market_data;
 
 message Level {
-  double price = 1;
-  double qty = 2;
+  string price = 1;
+  string qty = 2;
 }
 
 message Kline {
   string symbol = 1;
   string interval = 2;
-  double open = 3;
-  double high = 4;
-  double low = 5;
-  double close = 6;
-  double volume = 7;
+  string open = 3;
+  string high = 4;
+  string low = 5;
+  string close = 6;
+  string volume = 7;
   int64 timestamp = 8;
 }
 
 message Trade {
   string symbol = 1;
-  double price = 2;
-  double qty = 3;
+  string price = 2;
+  string qty = 3;
   string side = 4;
   int64 timestamp = 5;
 }

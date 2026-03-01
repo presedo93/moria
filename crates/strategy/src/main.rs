@@ -3,6 +3,8 @@ mod sma;
 
 use anyhow::Result;
 use moria_common::Config;
+use rust_decimal::Decimal;
+use std::str::FromStr;
 use tracing::info;
 
 #[tokio::main]
@@ -20,7 +22,7 @@ async fn main() -> Result<()> {
     let mut engine = engine::StrategyEngine::new(
         config.trading_pair,
         config.kline_interval,
-        0.001, // default qty
+        Decimal::from_str("0.001").expect("valid decimal literal"),
         config.sma_short_period,
         config.sma_long_period,
         config.market_data_grpc_addr,

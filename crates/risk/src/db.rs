@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -16,8 +17,8 @@ pub async fn insert_signal(
     symbol: &str,
     side: &str,
     order_type: &str,
-    price: f64,
-    qty: f64,
+    price: Decimal,
+    qty: Decimal,
     approved: bool,
     reject_reason: Option<&str>,
 ) -> Result<()> {
@@ -45,8 +46,8 @@ pub async fn insert_trade(
     order_id: &str,
     symbol: &str,
     side: &str,
-    price: f64,
-    qty: f64,
+    price: Decimal,
+    qty: Decimal,
     status: &str,
 ) -> Result<()> {
     sqlx::query(
@@ -66,19 +67,19 @@ pub async fn insert_trade(
     Ok(())
 }
 
-pub async fn get_position_qty(pool: &PgPool, symbol: &str) -> Result<f64> {
-    let row: Option<(f64,)> =
+pub async fn get_position_qty(pool: &PgPool, symbol: &str) -> Result<Decimal> {
+    let row: Option<(Decimal,)> =
         sqlx::query_as("SELECT qty FROM positions WHERE symbol = $1")
             .bind(symbol)
             .fetch_optional(pool)
             .await?;
-    Ok(row.map(|r| r.0).unwrap_or(0.0))
+    Ok(row.map(|r| r.0).unwrap_or(Decimal::ZERO))
 }
 
-pub async fn get_daily_realized_pnl(pool: &PgPool, symbol: &str) -> Result<f64> {
+pub async fn get_daily_realized_pnl(pool: &PgPool, symbol: &str) -> Result<Decimal> {
     // Simplified: sum of (sell_price - buy_price) * qty for today's trades
     // In a real system, this would be more sophisticated
-    let row: Option<(f64,)> = sqlx::query_as(
+    let row: Option<(Decimal,)> = sqlx::query_as(
         "SELECT COALESCE(SUM(
             CASE WHEN side = 'Sell' THEN price * qty ELSE -(price * qty) END
         ), 0) FROM trades
@@ -87,5 +88,5 @@ pub async fn get_daily_realized_pnl(pool: &PgPool, symbol: &str) -> Result<f64> 
     .bind(symbol)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| r.0).unwrap_or(0.0))
+    Ok(row.map(|r| r.0).unwrap_or(Decimal::ZERO))
 }

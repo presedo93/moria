@@ -153,11 +153,11 @@ impl BybitWs {
                     let kline = Kline {
                         symbol: self.symbol.clone(),
                         interval: k.interval,
-                        open: k.open.parse().unwrap_or(0.0),
-                        high: k.high.parse().unwrap_or(0.0),
-                        low: k.low.parse().unwrap_or(0.0),
-                        close: k.close.parse().unwrap_or(0.0),
-                        volume: k.volume.parse().unwrap_or(0.0),
+                        open: k.open,
+                        high: k.high,
+                        low: k.low,
+                        close: k.close,
+                        volume: k.volume,
                         timestamp: k.start,
                     };
                     let _ = self.kline_tx.send(kline);
@@ -174,8 +174,8 @@ impl BybitWs {
                 for t in msg.data {
                     let trade = Trade {
                         symbol: t.s,
-                        price: t.p.parse().unwrap_or(0.0),
-                        qty: t.v.parse().unwrap_or(0.0),
+                        price: t.p,
+                        qty: t.v,
                         side: t.side_upper,
                         timestamp: t.timestamp,
                     };
@@ -197,8 +197,8 @@ impl BybitWs {
                         .b
                         .into_iter()
                         .map(|l| Level {
-                            price: l[0].parse().unwrap_or(0.0),
-                            qty: l[1].parse().unwrap_or(0.0),
+                            price: l[0].clone(),
+                            qty: l[1].clone(),
                         })
                         .collect(),
                     asks: msg
@@ -206,8 +206,8 @@ impl BybitWs {
                         .a
                         .into_iter()
                         .map(|l| Level {
-                            price: l[0].parse().unwrap_or(0.0),
-                            qty: l[1].parse().unwrap_or(0.0),
+                            price: l[0].clone(),
+                            qty: l[1].clone(),
                         })
                         .collect(),
                     timestamp: msg.ts,

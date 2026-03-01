@@ -5,6 +5,8 @@ use moria_proto::{
     order::OrderRequest,
     risk::{risk_service_client::RiskServiceClient},
 };
+use rust_decimal::Decimal;
+use std::str::FromStr;
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
 use tracing::{info, warn};
@@ -12,7 +14,7 @@ use tracing::{info, warn};
 pub struct StrategyEngine {
     symbol: String,
     interval: String,
-    qty: f64,
+    qty: Decimal,
     sma: SmaCrossover,
     market_data_addr: String,
     risk_addr: String,
@@ -22,7 +24,7 @@ impl StrategyEngine {
     pub fn new(
         symbol: String,
         interval: String,
-        qty: f64,
+        qty: Decimal,
         short_period: usize,
         long_period: usize,
         market_data_addr: String,
@@ -73,28 +75,36 @@ impl StrategyEngine {
                 }
             };
 
-            let signal = self.sma.push(kline.close);
+            let close = match Decimal::from_str(&kline.close) {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!(?e, close = %kline.close, "Failed to parse kline close price");
+                    continue;
+                }
+            };
+
+            let signal = self.sma.push(close);
 
             if let Some(short) = self.sma.short_sma()
                 && let Some(long) = self.sma.long_sma()
             {
                 tracing::debug!(
-                    close = kline.close,
-                    short_sma = short,
-                    long_sma = long,
+                    %close,
+                    %short,
+                    %long,
                     "Kline processed"
                 );
             }
 
             match signal {
                 CrossoverSignal::Buy => {
-                    info!(price = kline.close, "BUY signal detected");
-                    self.send_signal("Buy", kline.close, risk_client.clone())
+                    info!(%close, "BUY signal detected");
+                    self.send_signal("Buy", close, risk_client.clone())
                         .await;
                 }
                 CrossoverSignal::Sell => {
-                    info!(price = kline.close, "SELL signal detected");
-                    self.send_signal("Sell", kline.close, risk_client.clone())
+                    info!(%close, "SELL signal detected");
+                    self.send_signal("Sell", close, risk_client.clone())
                         .await;
                 }
                 CrossoverSignal::None => {}
@@ -107,7 +117,7 @@ impl StrategyEngine {
     async fn send_signal(
         &self,
         side: &str,
-        price: f64,
+        price: Decimal,
         mut risk_client: RiskServiceClient<Channel>,
     ) {
         let signal_id = uuid::Uuid::new_v4().to_string();
@@ -116,8 +126,8 @@ impl StrategyEngine {
             symbol: self.symbol.clone(),
             side: side.to_string(),
             order_type: "Market".to_string(),
-            price,
-            qty: self.qty,
+            price: price.to_string(),
+            qty: self.qty.to_string(),
         };
 
         match risk_client.validate_order(request).await {
