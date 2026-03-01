@@ -1,0 +1,111 @@
+services:
+  # ── Infrastructure ───────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: moria
+      POSTGRES_PASSWORD: moria
+      POSTGRES_DB: moria
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moria"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4317"        # OTLP gRPC (internal, used by collector)
+
+  # ── Application services ─────────────────────────────────
+  market-data:
+    build: .
+    command: moria-market-data
+    environment:
+      BYBIT_WS_URL: wss://stream-testnet.bybit.com/v5/public/linear
+      TRADING_PAIR: BTCUSDT
+      KLINE_INTERVAL: "1"
+      MARKET_DATA_GRPC_ADDR: "0.0.0.0:50051"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RUST_LOG: info,market_data=debug
+    ports:
+      - "50051:50051"
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  strategy:
+    build: .
+    command: moria-strategy
+    environment:
+      TRADING_PAIR: BTCUSDT
+      KLINE_INTERVAL: "1"
+      SMA_SHORT_PERIOD: "10"
+      SMA_LONG_PERIOD: "30"
+      MARKET_DATA_GRPC_ADDR: market-data:50051
+      RISK_GRPC_ADDR: risk:50053
+      STRATEGY_GRPC_ADDR: "0.0.0.0:50052"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RUST_LOG: info,strategy=debug
+    depends_on:
+      market-data:
+        condition: service_started
+      risk:
+        condition: service_started
+
+  risk:
+    build: .
+    command: moria-risk
+    environment:
+      DATABASE_URL: postgres://moria:moria@postgres:5432/moria
+      MAX_POSITION_SIZE: "1.0"
+      MAX_DAILY_LOSS: "100.0"
+      ORDER_GRPC_ADDR: order:50054
+      RISK_GRPC_ADDR: "0.0.0.0:50053"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RUST_LOG: info,risk=debug
+    ports:
+      - "50053:50053"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  order:
+    build: .
+    command: moria-order
+    environment:
+      BYBIT_API_KEY: ${BYBIT_API_KEY:-}
+      BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
+      BYBIT_REST_URL: https://api-testnet.bybit.com
+      ORDER_GRPC_ADDR: "0.0.0.0:50054"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RUST_LOG: info,order=debug
+    ports:
+      - "50054:50054"
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+volumes:
+  pgdata:
