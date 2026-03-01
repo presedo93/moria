@@ -1,0 +1,17 @@
+[package]
+name = "moria-risk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+moria-proto = { path = "../proto" }
+moria-common = { path = "../common" }
+tokio.workspace = true
+tonic.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
