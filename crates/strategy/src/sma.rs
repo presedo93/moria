@@ -1,12 +1,6 @@
+use crate::strategy::{Signal, Strategy};
 use rust_decimal::Decimal;
 use std::collections::VecDeque;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CrossoverSignal {
-    Buy,
-    Sell,
-    None,
-}
 
 pub struct SmaCrossover {
     short_period: usize,
@@ -29,8 +23,7 @@ impl SmaCrossover {
         }
     }
 
-    /// Push a new close price and return a crossover signal if one occurred.
-    pub fn push(&mut self, close: Decimal) -> CrossoverSignal {
+    fn push_price(&mut self, close: Decimal) -> Signal {
         self.prices.push_back(close);
         if self.prices.len() > self.long_period {
             self.prices.pop_front();
@@ -38,7 +31,7 @@ impl SmaCrossover {
 
         // Need at least long_period prices to compute both SMAs
         if self.prices.len() < self.long_period {
-            return CrossoverSignal::None;
+            return Signal::None;
         }
 
         let short_sma = self.compute_sma(self.short_period);
@@ -48,12 +41,12 @@ impl SmaCrossover {
         let signal = match self.prev_short_above_long {
             Some(was_above) if was_above != short_above => {
                 if short_above {
-                    CrossoverSignal::Buy
+                    Signal::Buy
                 } else {
-                    CrossoverSignal::Sell
+                    Signal::Sell
                 }
             }
-            _ => CrossoverSignal::None,
+            _ => Signal::None,
         };
 
         self.prev_short_above_long = Some(short_above);
@@ -66,6 +59,7 @@ impl SmaCrossover {
         sum / Decimal::from(period)
     }
 
+    #[cfg(test)]
     pub fn short_sma(&self) -> Option<Decimal> {
         if self.prices.len() >= self.short_period {
             Some(self.compute_sma(self.short_period))
@@ -74,12 +68,23 @@ impl SmaCrossover {
         }
     }
 
+    #[cfg(test)]
     pub fn long_sma(&self) -> Option<Decimal> {
         if self.prices.len() >= self.long_period {
             Some(self.compute_sma(self.long_period))
         } else {
             None
         }
+    }
+}
+
+impl Strategy for SmaCrossover {
+    fn name(&self) -> &str {
+        "sma_crossover"
+    }
+
+    fn push(&mut self, close: Decimal) -> Signal {
+        self.push_price(close)
     }
 }
 
@@ -95,11 +100,11 @@ mod tests {
     #[test]
     fn no_signal_until_enough_data() {
         let mut sma = SmaCrossover::new(2, 4);
-        assert_eq!(sma.push(dec("10")), CrossoverSignal::None);
-        assert_eq!(sma.push(dec("11")), CrossoverSignal::None);
-        assert_eq!(sma.push(dec("12")), CrossoverSignal::None);
+        assert_eq!(sma.push(dec("10")), Signal::None);
+        assert_eq!(sma.push(dec("11")), Signal::None);
+        assert_eq!(sma.push(dec("12")), Signal::None);
         // 4th price: first time we have both SMAs, establishes baseline
-        assert_eq!(sma.push(dec("13")), CrossoverSignal::None);
+        assert_eq!(sma.push(dec("13")), Signal::None);
     }
 
     #[test]
@@ -110,10 +115,10 @@ mod tests {
         sma.push(dec("20"));
         sma.push(dec("18"));
         sma.push(dec("16"));
-        assert_eq!(sma.push(dec("14")), CrossoverSignal::None); // baseline: short < long
+        assert_eq!(sma.push(dec("14")), Signal::None); // baseline: short < long
 
         // Now price jumps up
-        assert_eq!(sma.push(dec("25")), CrossoverSignal::Buy);
+        assert_eq!(sma.push(dec("25")), Signal::Buy);
     }
 
     #[test]
@@ -124,10 +129,10 @@ mod tests {
         sma.push(dec("10"));
         sma.push(dec("12"));
         sma.push(dec("14"));
-        assert_eq!(sma.push(dec("16")), CrossoverSignal::None); // baseline: short > long
+        assert_eq!(sma.push(dec("16")), Signal::None); // baseline: short > long
 
         // Price drops
-        assert_eq!(sma.push(dec("5")), CrossoverSignal::Sell);
+        assert_eq!(sma.push(dec("5")), Signal::Sell);
     }
 
     #[test]
@@ -137,7 +142,7 @@ mod tests {
         // Consistently rising: short always above long
         for price in ["10", "11", "12", "13", "14", "15", "16"] {
             let signal = sma.push(dec(price));
-            assert_eq!(signal, CrossoverSignal::None);
+            assert_eq!(signal, Signal::None);
         }
     }
 

@@ -11,11 +11,14 @@ pub struct Config {
     pub bybit_rest_url: String,
     pub trading_pair: String,
     pub kline_interval: String,
+    pub strategy_type: String,
     pub sma_short_period: usize,
     pub sma_long_period: usize,
     pub order_qty: Decimal,
     pub max_position_size: Decimal,
     pub max_daily_loss: Decimal,
+    pub max_portfolio_notional: Decimal,
+    pub max_drawdown: Decimal,
     pub database_url: String,
     pub otel_endpoint: String,
     pub metrics_addr: Option<String>,
@@ -36,6 +39,8 @@ impl Config {
                 .unwrap_or_else(|_| "https://api-testnet.bybit.com".into()),
             trading_pair: env::var("TRADING_PAIR").unwrap_or_else(|_| "BTCUSDT".into()),
             kline_interval: env::var("KLINE_INTERVAL").unwrap_or_else(|_| "1".into()),
+            strategy_type: env::var("STRATEGY_TYPE")
+                .unwrap_or_else(|_| "sma_crossover".into()),
             sma_short_period: env::var("SMA_SHORT_PERIOD")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -56,6 +61,14 @@ impl Config {
                 .ok()
                 .and_then(|v| Decimal::from_str(&v).ok())
                 .unwrap_or_else(|| Decimal::from(100)),
+            max_portfolio_notional: env::var("MAX_PORTFOLIO_NOTIONAL")
+                .ok()
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from(10_000)),
+            max_drawdown: env::var("MAX_DRAWDOWN")
+                .ok()
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from(500)),
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgres://moria:moria@localhost:5432/moria".into()),
             otel_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")

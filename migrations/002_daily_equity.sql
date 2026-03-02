@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS daily_equity (
+    date DATE PRIMARY KEY,
+    peak_pnl NUMERIC(20, 8) NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

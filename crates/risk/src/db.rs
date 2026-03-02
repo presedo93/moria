@@ -10,8 +10,10 @@ pub struct SignalDecision {
 }
 
 pub async fn run_migrations(pool: &PgPool) -> Result<()> {
-    let migration_sql = include_str!("../../../migrations/001_initial.sql");
-    sqlx::raw_sql(migration_sql).execute(pool).await?;
+    let migration_001 = include_str!("../../../migrations/001_initial.sql");
+    sqlx::raw_sql(migration_001).execute(pool).await?;
+    let migration_002 = include_str!("../../../migrations/002_daily_equity.sql");
+    sqlx::raw_sql(migration_002).execute(pool).await?;
     tracing::info!("Database migrations applied");
     Ok(())
 }
@@ -217,4 +219,34 @@ pub async fn get_daily_realized_pnl(pool: &PgPool, symbol: &str) -> Result<Decim
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| r.0).unwrap_or(Decimal::ZERO))
+}
+
+pub async fn get_portfolio_notional(pool: &PgPool) -> Result<Decimal> {
+    let row: Option<(Decimal,)> = sqlx::query_as(
+        "SELECT COALESCE(SUM(ABS(qty) * avg_entry_price), 0) FROM positions WHERE qty != 0",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0).unwrap_or(Decimal::ZERO))
+}
+
+pub async fn get_daily_peak_pnl(pool: &PgPool) -> Result<Decimal> {
+    let row: Option<(Decimal,)> =
+        sqlx::query_as("SELECT peak_pnl FROM daily_equity WHERE date = CURRENT_DATE")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|r| r.0).unwrap_or(Decimal::ZERO))
+}
+
+pub async fn update_daily_peak_pnl(pool: &PgPool, new_peak: Decimal) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO daily_equity (date, peak_pnl, updated_at)
+         VALUES (CURRENT_DATE, $1, now())
+         ON CONFLICT (date)
+         DO UPDATE SET peak_pnl = $1, updated_at = now()",
+    )
+    .bind(new_peak)
+    .execute(pool)
+    .await?;
+    Ok(())
 }

@@ -96,12 +96,27 @@ impl RiskService for RiskServer {
             .await
             .map_err(|e| Status::internal(format!("db error: {e}")))?;
 
+        let portfolio_notional = db::get_portfolio_notional(&self.pool)
+            .await
+            .map_err(|e| Status::internal(format!("db error: {e}")))?;
+
+        let daily_peak_pnl = db::get_daily_peak_pnl(&self.pool)
+            .await
+            .map_err(|e| Status::internal(format!("db error: {e}")))?;
+
         // Validate
         let decision = match self
             .validator
-            .validate(current_position, &order.side, qty, daily_pnl)
+            .validate(current_position, &order.side, qty, price, daily_pnl, portfolio_notional, daily_peak_pnl)
         {
             Ok(()) => {
+                // Update daily peak high-water mark if PnL improved
+                if daily_pnl > daily_peak_pnl {
+                    if let Err(e) = db::update_daily_peak_pnl(&self.pool, daily_pnl).await {
+                        warn!(?e, "Failed to update daily peak PnL");
+                    }
+                }
+
                 // Forward to order service
                 let order_req = OrderRequest {
                     signal_id: signal_id.clone(),
@@ -196,6 +211,9 @@ impl RiskService for RiskServer {
                 }
             }
             Err(e) => {
+                if matches!(e, crate::validator::RiskError::DrawdownBreached { .. }) {
+                    counter!("risk_drawdown_breaker_tripped_total").increment(1);
+                }
                 counter!("risk_rejected_total", "reason" => "risk_validation").increment(1);
                 let reason = e.to_string();
                 warn!(signal_id, %reason, "Order rejected");
@@ -311,7 +329,7 @@ mod integration_tests {
 
         let server = RiskServer::new(
             pool.clone(),
-            RiskValidator::new(dec("1.0"), dec("100.0")),
+            RiskValidator::new(dec("1.0"), dec("100.0"), dec("10000.0"), dec("500.0")),
             OrderServiceClient::new(order_channel),
         );
 
@@ -404,7 +422,7 @@ mod integration_tests {
 
         let server = RiskServer::new(
             pool.clone(),
-            RiskValidator::new(dec("1.0"), dec("100.0")),
+            RiskValidator::new(dec("1.0"), dec("100.0"), dec("10000.0"), dec("500.0")),
             OrderServiceClient::new(order_channel),
         );
 
@@ -464,7 +482,7 @@ mod integration_tests {
 
         let server = RiskServer::new(
             pool.clone(),
-            RiskValidator::new(dec("1.0"), dec("100.0")),
+            RiskValidator::new(dec("1.0"), dec("100.0"), dec("10000.0"), dec("500.0")),
             OrderServiceClient::new(order_channel),
         );
 

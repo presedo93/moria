@@ -1,7 +1,8 @@
 mod engine;
 mod sma;
+mod strategy;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use moria_common::Config;
 use tracing::info;
 
@@ -11,10 +12,20 @@ async fn main() -> Result<()> {
     moria_common::telemetry::init_tracing("strategy")?;
     moria_common::telemetry::init_metrics("strategy", config.metrics_addr.as_deref())?;
 
+    let strategy = strategy::create_strategy(
+        &config.strategy_type,
+        config.sma_short_period,
+        config.sma_long_period,
+    );
+
+    let strategy = match strategy {
+        Some(s) => s,
+        None => bail!("Unknown strategy type: {}", config.strategy_type),
+    };
+
     info!(
         pair = %config.trading_pair,
-        short = config.sma_short_period,
-        long = config.sma_long_period,
+        strategy = %config.strategy_type,
         qty = %config.order_qty,
         "Starting strategy service"
     );
@@ -23,8 +34,7 @@ async fn main() -> Result<()> {
         config.trading_pair,
         config.kline_interval,
         config.order_qty,
-        config.sma_short_period,
-        config.sma_long_period,
+        strategy,
         config.market_data_grpc_addr,
         config.risk_grpc_addr,
     );

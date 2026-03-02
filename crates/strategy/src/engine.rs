@@ -1,4 +1,4 @@
-use crate::sma::{CrossoverSignal, SmaCrossover};
+use crate::strategy::{Signal, Strategy};
 use anyhow::{Context, Result};
 use metrics::counter;
 use moria_proto::{
@@ -17,7 +17,7 @@ pub struct StrategyEngine {
     symbol: String,
     interval: String,
     qty: Decimal,
-    sma: SmaCrossover,
+    strategy: Box<dyn Strategy>,
     market_data_addr: String,
     risk_addr: String,
 }
@@ -27,8 +27,7 @@ impl StrategyEngine {
         symbol: String,
         interval: String,
         qty: Decimal,
-        short_period: usize,
-        long_period: usize,
+        strategy: Box<dyn Strategy>,
         market_data_addr: String,
         risk_addr: String,
     ) -> Self {
@@ -36,7 +35,7 @@ impl StrategyEngine {
             symbol,
             interval,
             qty,
-            sma: SmaCrossover::new(short_period, long_period),
+            strategy,
             market_data_addr,
             risk_addr,
         }
@@ -92,7 +91,8 @@ impl StrategyEngine {
             .context("Failed to start kline stream")?
             .into_inner();
 
-        info!(symbol = %self.symbol, "Strategy engine started, consuming klines");
+        let strategy_name = self.strategy.name().to_owned();
+        info!(symbol = %self.symbol, strategy = %strategy_name, "Strategy engine started, consuming klines");
 
         while let Some(kline) = stream.next().await {
             let kline = match kline {
@@ -111,31 +111,22 @@ impl StrategyEngine {
                 }
             };
 
-            let signal = self.sma.push(close);
+            let signal = self.strategy.push(close);
 
-            if let Some(short) = self.sma.short_sma()
-                && let Some(long) = self.sma.long_sma()
-            {
-                tracing::debug!(
-                    %close,
-                    %short,
-                    %long,
-                    "Kline processed"
-                );
-            }
+            tracing::debug!(%close, strategy = %strategy_name, "Kline processed");
 
             match signal {
-                CrossoverSignal::Buy => {
+                Signal::Buy => {
                     counter!("strategy_signals_total", "side" => "Buy").increment(1);
                     info!(%close, "BUY signal detected");
                     self.send_signal("Buy", close, risk_client.clone()).await;
                 }
-                CrossoverSignal::Sell => {
+                Signal::Sell => {
                     counter!("strategy_signals_total", "side" => "Sell").increment(1);
                     info!(%close, "SELL signal detected");
                     self.send_signal("Sell", close, risk_client.clone()).await;
                 }
-                CrossoverSignal::None => {}
+                Signal::None => {}
             }
         }
 

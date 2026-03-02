@@ -32,8 +32,12 @@ async fn main() -> Result<()> {
         .context("Failed to connect to order service")?;
     let order_client = OrderServiceClient::new(order_channel);
 
-    let risk_validator =
-        validator::RiskValidator::new(config.max_position_size, config.max_daily_loss);
+    let risk_validator = validator::RiskValidator::new(
+        config.max_position_size,
+        config.max_daily_loss,
+        config.max_portfolio_notional,
+        config.max_drawdown,
+    );
 
     let grpc_server = server::RiskServer::new(pool, risk_validator, order_client);
     let (health_reporter, health_service) = health_reporter();
