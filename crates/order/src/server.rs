@@ -29,6 +29,7 @@ impl OrderServer {
 
 #[tonic::async_trait]
 impl OrderService for OrderServer {
+    #[tracing::instrument(skip_all)]
     async fn place_order(
         &self,
         request: Request<OrderRequest>,

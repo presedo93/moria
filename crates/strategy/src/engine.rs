@@ -67,6 +67,7 @@ impl StrategyEngine {
         }
     }
 
+    #[tracing::instrument(skip(self), fields(symbol = %self.symbol))]
     async fn run_once(&mut self) -> Result<()> {
         let market_channel = Channel::from_shared(format!("http://{}", self.market_data_addr))?
             .connect_timeout(Duration::from_secs(5))
@@ -135,6 +136,7 @@ impl StrategyEngine {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, risk_client), fields(symbol = %self.symbol))]
     async fn send_signal(
         &self,
         side: &str,

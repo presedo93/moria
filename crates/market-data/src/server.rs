@@ -46,6 +46,7 @@ impl MarketDataService for MarketDataServer {
         Box<dyn tokio_stream::Stream<Item = Result<OrderbookSnapshot, Status>> + Send>,
     >;
 
+    #[tracing::instrument(skip_all)]
     async fn stream_klines(
         &self,
         request: Request<StreamRequest>,
@@ -77,6 +78,7 @@ impl MarketDataService for MarketDataServer {
         Ok(Response::new(Box::pin(stream)))
     }
 
+    #[tracing::instrument(skip_all)]
     async fn stream_trades(
         &self,
         request: Request<StreamRequest>,
@@ -104,6 +106,7 @@ impl MarketDataService for MarketDataServer {
         Ok(Response::new(Box::pin(stream)))
     }
 
+    #[tracing::instrument(skip_all)]
     async fn stream_orderbook(
         &self,
         request: Request<StreamRequest>,

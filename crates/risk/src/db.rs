@@ -18,6 +18,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip(pool))]
 pub async fn get_signal_decision(pool: &PgPool, signal_id: Uuid) -> Result<Option<SignalDecision>> {
     let row: Option<(bool, Option<String>)> =
         sqlx::query_as("SELECT approved, reject_reason FROM signals WHERE id = $1")
@@ -88,6 +89,7 @@ pub async fn insert_trade(
     Ok(())
 }
 
+#[tracing::instrument(skip(pool, price, qty, reject_reason, trade_order_id, trade_status))]
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_signal_and_trade(
     pool: &PgPool,
@@ -198,6 +200,7 @@ async fn apply_filled_trade_to_position(
     Ok(())
 }
 
+#[tracing::instrument(skip(pool))]
 pub async fn get_position_qty(pool: &PgPool, symbol: &str) -> Result<Decimal> {
     let row: Option<(Decimal,)> = sqlx::query_as("SELECT qty FROM positions WHERE symbol = $1")
         .bind(symbol)
@@ -206,6 +209,7 @@ pub async fn get_position_qty(pool: &PgPool, symbol: &str) -> Result<Decimal> {
     Ok(row.map(|r| r.0).unwrap_or(Decimal::ZERO))
 }
 
+#[tracing::instrument(skip(pool))]
 pub async fn get_daily_realized_pnl(pool: &PgPool, symbol: &str) -> Result<Decimal> {
     // Simplified: sum of (sell_price - buy_price) * qty for today's trades
     // In a real system, this would be more sophisticated

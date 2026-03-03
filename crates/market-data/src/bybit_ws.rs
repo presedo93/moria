@@ -66,6 +66,7 @@ impl BybitWs {
         }
     }
 
+    #[tracing::instrument(skip(self), fields(symbol = %self.symbol))]
     async fn connect_and_stream(&self) -> Result<()> {
         info!(url = %self.url, "Connecting to Bybit WebSocket");
         let (ws_stream, _) = connect_async(&self.url)

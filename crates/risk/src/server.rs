@@ -46,6 +46,7 @@ fn parse_decimal(field: &str, value: &str) -> Result<Decimal, Status> {
 
 #[tonic::async_trait]
 impl RiskService for RiskServer {
+    #[tracing::instrument(skip_all)]
     async fn validate_order(
         &self,
         request: Request<OrderRequest>,

@@ -37,6 +37,7 @@ impl BybitRestClient {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn place_order(
         &self,
         symbol: &str,
