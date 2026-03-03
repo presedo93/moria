@@ -3,7 +3,7 @@ use hmac::{Hmac, Mac};
 use metrics::{counter, histogram};
 use rust_decimal::Decimal;
 use sha2::Sha256;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -27,7 +27,10 @@ pub struct BybitRestClient {
 impl BybitRestClient {
     pub fn new(base_url: String, api_key: String, api_secret: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .expect("failed to build HTTP client"),
             base_url,
             api_key,
             api_secret,

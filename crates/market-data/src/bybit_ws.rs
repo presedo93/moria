@@ -164,7 +164,9 @@ impl BybitWs {
                         volume: k.volume,
                         timestamp: k.start,
                     };
-                    let _ = self.kline_tx.send(kline);
+                    if self.kline_tx.send(kline).is_err() {
+                        counter!("market_data_broadcast_dropped_total", "stream" => "klines").increment(1);
+                    }
                     counter!("market_data_ws_kline_ingested_total").increment(1);
                 }
             }
@@ -184,7 +186,9 @@ impl BybitWs {
                         side: t.side_upper,
                         timestamp: t.timestamp,
                     };
-                    let _ = self.trade_tx.send(trade);
+                    if self.trade_tx.send(trade).is_err() {
+                        counter!("market_data_broadcast_dropped_total", "stream" => "trades").increment(1);
+                    }
                     counter!("market_data_ws_trade_ingested_total").increment(1);
                 }
             }
@@ -218,7 +222,9 @@ impl BybitWs {
                         .collect(),
                     timestamp: msg.ts,
                 };
-                let _ = self.orderbook_tx.send(snapshot);
+                if self.orderbook_tx.send(snapshot).is_err() {
+                    counter!("market_data_broadcast_dropped_total", "stream" => "orderbook").increment(1);
+                }
                 counter!("market_data_ws_orderbook_ingested_total").increment(1);
             }
             Err(e) => warn!(?e, "Failed to parse orderbook message"),

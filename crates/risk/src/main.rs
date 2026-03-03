@@ -6,9 +6,10 @@ use anyhow::{Context, Result};
 use moria_common::Config;
 use moria_proto::order::order_service_client::OrderServiceClient;
 use sqlx::postgres::PgPoolOptions;
+use std::time::Duration;
 use tonic::transport::{Channel, Server};
 use tonic_health::server::health_reporter;
-use tracing::info;
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,20 +17,29 @@ async fn main() -> Result<()> {
     moria_common::telemetry::init_tracing("risk")?;
     moria_common::telemetry::init_metrics("risk", config.metrics_addr.as_deref())?;
 
-    // Connect to PostgreSQL
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&config.database_url)
-        .await
-        .context("Failed to connect to PostgreSQL")?;
+    // Connect to PostgreSQL with retry
+    let pool = retry_connect("PostgreSQL", 5, Duration::from_secs(3), || async {
+        PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&config.database_url)
+            .await
+    })
+    .await
+    .context("Failed to connect to PostgreSQL")?;
 
     db::run_migrations(&pool).await?;
 
-    // Connect to order service
-    let order_channel = Channel::from_shared(format!("http://{}", config.order_grpc_addr))?
-        .connect()
-        .await
-        .context("Failed to connect to order service")?;
+    // Connect to order service with retry
+    let order_endpoint = Channel::from_shared(format!("http://{}", config.order_grpc_addr))
+        .context("Invalid order service address")?
+        .connect_timeout(Duration::from_secs(5));
+    let order_channel = retry_connect("order service", 5, Duration::from_secs(3), || {
+        let endpoint = order_endpoint.clone();
+        async move { endpoint.connect().await }
+    })
+    .await
+    .context("Failed to connect to order service")?;
     let order_client = OrderServiceClient::new(order_channel);
 
     let risk_validator = validator::RiskValidator::new(
@@ -54,4 +64,31 @@ async fn main() -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+async fn retry_connect<F, Fut, T, E>(
+    name: &str,
+    max_attempts: u32,
+    base_delay: Duration,
+    f: F,
+) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    for attempt in 1..=max_attempts {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                if attempt == max_attempts {
+                    anyhow::bail!("Failed to connect to {name} after {max_attempts} attempts: {e}");
+                }
+                let delay = base_delay * attempt;
+                warn!(%attempt, %name, %e, ?delay, "Connection failed, retrying");
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+    unreachable!()
 }

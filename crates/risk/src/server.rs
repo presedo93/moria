@@ -10,7 +10,7 @@ use moria_proto::{
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::str::FromStr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status, transport::Channel};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -127,8 +127,13 @@ impl RiskService for RiskServer {
                     qty: qty.to_string(),
                 };
                 let mut order_client = self.order_client.clone();
-                match order_client.place_order(order_req).await {
-                    Ok(resp) => {
+                match tokio::time::timeout(
+                    Duration::from_secs(10),
+                    order_client.place_order(order_req),
+                )
+                .await
+                {
+                    Ok(Ok(resp)) => {
                         let order_resp = resp.into_inner();
                         let is_approved =
                             order_resp.status == "Submitted" || order_resp.status == "Filled";
@@ -180,11 +185,39 @@ impl RiskService for RiskServer {
                             }
                         }
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         counter!("risk_rejected_total", "reason" => "order_service_error")
                             .increment(1);
                         let reason = format!("order service call failed: {e}");
                         warn!(?e, signal_id, "Failed to place order");
+
+                        db::persist_signal_and_trade(
+                            &self.pool,
+                            signal_uuid,
+                            &order.symbol,
+                            &order.side,
+                            &order.order_type,
+                            price,
+                            qty,
+                            false,
+                            Some(&reason),
+                            None,
+                            None,
+                        )
+                        .await
+                        .map_err(|db_err| Status::internal(format!("db error: {db_err}")))?;
+
+                        RiskDecision {
+                            approved: false,
+                            reason,
+                            signal_id,
+                        }
+                    }
+                    Err(_) => {
+                        counter!("risk_rejected_total", "reason" => "order_service_timeout")
+                            .increment(1);
+                        let reason = "order service call timed out".to_string();
+                        warn!(signal_id, "Order placement timed out");
 
                         db::persist_signal_and_trade(
                             &self.pool,

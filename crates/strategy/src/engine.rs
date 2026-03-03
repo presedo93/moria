@@ -69,12 +69,14 @@ impl StrategyEngine {
 
     async fn run_once(&mut self) -> Result<()> {
         let market_channel = Channel::from_shared(format!("http://{}", self.market_data_addr))?
+            .connect_timeout(Duration::from_secs(5))
             .connect()
             .await
             .context("Failed to connect to market-data service")?;
         let mut market_client = MarketDataServiceClient::new(market_channel);
 
         let risk_channel = Channel::from_shared(format!("http://{}", self.risk_addr))?
+            .connect_timeout(Duration::from_secs(5))
             .connect()
             .await
             .context("Failed to connect to risk service")?;
@@ -149,8 +151,13 @@ impl StrategyEngine {
             qty: self.qty.to_string(),
         };
 
-        match risk_client.validate_order(request).await {
-            Ok(response) => {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            risk_client.validate_order(request),
+        )
+        .await
+        {
+            Ok(Ok(response)) => {
                 let decision = response.into_inner();
                 if decision.approved {
                     counter!("strategy_risk_decision_total", "decision" => "approved").increment(1);
@@ -160,9 +167,13 @@ impl StrategyEngine {
                     warn!(signal_id, reason = %decision.reason, "Order rejected by risk service");
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 counter!("strategy_risk_decision_total", "decision" => "error").increment(1);
                 warn!(?e, signal_id, "Failed to contact risk service");
+            }
+            Err(_) => {
+                counter!("strategy_risk_decision_total", "decision" => "timeout").increment(1);
+                warn!(signal_id, "Risk validation timed out");
             }
         }
     }
