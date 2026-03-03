@@ -73,6 +73,7 @@ docker-compose up --build
 ```
 
 This starts all 4 application services plus:
+
 - **PostgreSQL** (port 5432) — trade/signal persistence
 - **OTel Collector** (port 4317) — receives traces from all services
 - **Jaeger** (port 16686) — trace visualization UI

@@ -40,6 +40,20 @@ services:
   market-data:
     build: .
     command: moria-market-data
+    develop:
+      watch:
+        - action: rebuild
+          path: crates/market-data/
+        - action: rebuild
+          path: crates/common/
+        - action: rebuild
+          path: crates/proto/
+        - action: rebuild
+          path: proto/
+        - action: rebuild
+          path: Cargo.toml
+        - action: rebuild
+          path: Cargo.lock
     environment:
       BYBIT_WS_URL: wss://stream-testnet.bybit.com/v5/public/linear
       TRADING_PAIR: BTCUSDT
@@ -58,6 +72,20 @@ services:
   strategy:
     build: .
     command: moria-strategy
+    develop:
+      watch:
+        - action: rebuild
+          path: crates/strategy/
+        - action: rebuild
+          path: crates/common/
+        - action: rebuild
+          path: crates/proto/
+        - action: rebuild
+          path: proto/
+        - action: rebuild
+          path: Cargo.toml
+        - action: rebuild
+          path: Cargo.lock
     environment:
       TRADING_PAIR: BTCUSDT
       KLINE_INTERVAL: "1"
@@ -81,6 +109,22 @@ services:
   risk:
     build: .
     command: moria-risk
+    develop:
+      watch:
+        - action: rebuild
+          path: crates/risk/
+        - action: rebuild
+          path: crates/common/
+        - action: rebuild
+          path: crates/proto/
+        - action: rebuild
+          path: proto/
+        - action: rebuild
+          path: Cargo.toml
+        - action: rebuild
+          path: Cargo.lock
+        - action: rebuild
+          path: migrations/
     environment:
       DATABASE_URL: postgres://moria:moria@postgres:5432/moria
       MAX_POSITION_SIZE: "1.0"
@@ -102,6 +146,20 @@ services:
   order:
     build: .
     command: moria-order
+    develop:
+      watch:
+        - action: rebuild
+          path: crates/order/
+        - action: rebuild
+          path: crates/common/
+        - action: rebuild
+          path: crates/proto/
+        - action: rebuild
+          path: proto/
+        - action: rebuild
+          path: Cargo.toml
+        - action: rebuild
+          path: Cargo.lock
     environment:
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}

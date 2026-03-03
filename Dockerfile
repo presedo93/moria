@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.93.1-trixie AS builder
 
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
@@ -12,7 +12,7 @@ COPY migrations/ migrations/
 RUN cargo build --release
 
 # ── Runtime stage ────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 
