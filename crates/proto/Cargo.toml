@@ -9,4 +9,4 @@ prost.workspace = true
 prost-types.workspace = true
 
 [build-dependencies]
-tonic-build.workspace = true
+tonic-build = { workspace = true, features = ["prost"] }

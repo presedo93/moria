@@ -17,4 +17,5 @@ tracing.workspace = true
 anyhow.workspace = true
 metrics.workspace = true
 tonic-health.workspace = true
+tonic-reflection.workspace = true
 thiserror.workspace = true

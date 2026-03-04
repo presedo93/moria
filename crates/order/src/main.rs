@@ -5,6 +5,7 @@ use anyhow::Result;
 use moria_common::Config;
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
+use tonic_reflection::server::Builder as ReflectionBuilder;
 use tracing::info;
 
 #[tokio::main]
@@ -27,8 +28,14 @@ async fn main() -> Result<()> {
     let addr = config.order_grpc_addr.parse()?;
     info!(%addr, "Starting order gRPC server");
 
+    let reflection_service = ReflectionBuilder::configure()
+        .register_encoded_file_descriptor_set(moria_proto::FILE_DESCRIPTOR_SET)
+        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
+        .build_v1()?;
+
     Server::builder()
         .add_service(health_service)
+        .add_service(reflection_service)
         .add_service(grpc_server.into_service())
         .serve(addr)
         .await?;

@@ -13,3 +13,6 @@ pub mod order {
 pub mod risk {
     tonic::include_proto!("risk");
 }
+
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    tonic::include_file_descriptor_set!("moria_descriptor");

@@ -18,6 +18,7 @@ edition = "2024"
 tonic = "0.13"
 tonic-build = "0.13"
 tonic-health = "0.13"
+tonic-reflection = "0.13"
 prost = "0.13"
 prost-types = "0.13"
 
