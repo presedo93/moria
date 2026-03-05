@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::Signed;
+use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -120,7 +121,51 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(migration_004).execute(pool).await?;
     let migration_005 = include_str!("../../../migrations/005_trade_reconciliation_index.sql");
     sqlx::raw_sql(migration_005).execute(pool).await?;
+    let migration_006 = include_str!("../../../migrations/006_domain_events.sql");
+    sqlx::raw_sql(migration_006).execute(pool).await?;
     tracing::info!("Database migrations applied");
+    Ok(())
+}
+
+pub async fn append_domain_event(
+    pool: &PgPool,
+    producer: &str,
+    event_type: &str,
+    aggregate_id: &str,
+    payload: Value,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO domain_events (id, producer, event_type, aggregate_id, payload)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(producer)
+    .bind(event_type)
+    .bind(aggregate_id)
+    .bind(payload)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn append_domain_event_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    producer: &str,
+    event_type: &str,
+    aggregate_id: &str,
+    payload: Value,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO domain_events (id, producer, event_type, aggregate_id, payload)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(producer)
+    .bind(event_type)
+    .bind(aggregate_id)
+    .bind(payload)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 

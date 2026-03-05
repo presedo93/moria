@@ -8,6 +8,7 @@ use moria_proto::{
     },
 };
 use rust_decimal::Decimal;
+use serde_json::json;
 use sqlx::PgPool;
 use std::str::FromStr;
 use std::time::Instant;
@@ -158,6 +159,23 @@ impl RiskService for RiskServer {
                 .await
                 .map_err(|e| Status::internal(format!("db error: {e}")))?;
 
+                db::append_domain_event_in_tx(
+                    &mut risk_tx,
+                    "risk",
+                    "RiskOrderAccepted",
+                    &signal_id,
+                    json!({
+                        "signal_id": signal_id,
+                        "symbol": order.symbol,
+                        "side": order.side,
+                        "order_type": order.order_type,
+                        "price": price,
+                        "qty": qty
+                    }),
+                )
+                .await
+                .map_err(|e| Status::internal(format!("db error: {e}")))?;
+
                 risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
 
                 counter!("risk_approved_total").increment(1);
@@ -188,6 +206,21 @@ impl RiskService for RiskServer {
                     Some(&reason),
                     None,
                     None,
+                )
+                .await
+                .map_err(|e| Status::internal(format!("db error: {e}")))?;
+
+                db::append_domain_event_in_tx(
+                    &mut risk_tx,
+                    "risk",
+                    "RiskOrderRejected",
+                    &signal_id,
+                    json!({
+                        "signal_id": signal_id,
+                        "symbol": order.symbol,
+                        "side": order.side,
+                        "reason": reason
+                    }),
                 )
                 .await
                 .map_err(|e| Status::internal(format!("db error: {e}")))?;

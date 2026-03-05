@@ -8,6 +8,7 @@ use std::time::Duration;
 use tonic::transport::Channel;
 use tracing::{info, warn};
 use uuid::Uuid;
+use serde_json::json;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_BATCH_SIZE: i64 = 100;
@@ -113,6 +114,24 @@ async fn reconcile_once(
                 .execute(pool)
                 .await?;
         }
+
+        sqlx::query(
+            "INSERT INTO domain_events (id, producer, event_type, aggregate_id, payload)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind("reconciler")
+        .bind("OrderStatusReconciled")
+        .bind(trade.signal_id.to_string())
+        .bind(json!({
+            "signal_id": trade.signal_id.to_string(),
+            "order_id": trade.order_id,
+            "old_status": trade.status,
+            "new_status": status_resp.status,
+            "message": status_resp.message
+        }))
+        .execute(pool)
+        .await?;
     }
 
     Ok(())

@@ -5,6 +5,7 @@ use moria_proto::order::order_service_client::OrderServiceClient;
 use sqlx::PgPool;
 use std::time::Duration;
 use tonic::transport::Channel;
+use serde_json::json;
 use tracing::{info, warn};
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -57,17 +58,54 @@ async fn run_order_execution_worker(
                     rejected,
                 )
                 .await?;
+                db::append_domain_event(
+                    &pool,
+                    "risk-worker",
+                    "OrderExecutionSubmitted",
+                    &intent.signal_id.to_string(),
+                    json!({
+                        "signal_id": intent.signal_id.to_string(),
+                        "order_id": result.order_id,
+                        "status": status,
+                        "symbol": intent.symbol
+                    }),
+                )
+                .await?;
                 db::mark_order_intent_succeeded(&pool, intent.id).await?;
                 counter!("risk_outbox_submitted_total", "status" => status).increment(1);
             }
             Ok(Err(e)) => {
                 counter!("risk_outbox_submit_errors_total").increment(1);
                 let reason = format!("order service call failed: {e}");
+                db::append_domain_event(
+                    &pool,
+                    "risk-worker",
+                    "OrderExecutionRetryScheduled",
+                    &intent.signal_id.to_string(),
+                    json!({
+                        "signal_id": intent.signal_id.to_string(),
+                        "attempts": intent.attempts,
+                        "reason": reason,
+                    }),
+                )
+                .await?;
                 db::mark_order_intent_retry(&pool, intent.id, &reason, intent.attempts, MAX_ATTEMPTS)
                     .await?;
             }
             Err(_) => {
                 counter!("risk_outbox_submit_timeouts_total").increment(1);
+                db::append_domain_event(
+                    &pool,
+                    "risk-worker",
+                    "OrderExecutionRetryScheduled",
+                    &intent.signal_id.to_string(),
+                    json!({
+                        "signal_id": intent.signal_id.to_string(),
+                        "attempts": intent.attempts,
+                        "reason": "order service call timed out",
+                    }),
+                )
+                .await?;
                 db::mark_order_intent_retry(
                     &pool,
                     intent.id,
