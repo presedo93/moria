@@ -1,7 +1,7 @@
-mod circuit_breaker;
 mod db;
 mod server;
 mod validator;
+mod worker;
 
 use anyhow::{Context, Result};
 use moria_common::Config;
@@ -51,6 +51,7 @@ async fn main() -> Result<()> {
     .await
     .context("Failed to connect to order service")?;
     let order_client = OrderServiceClient::new(order_channel);
+    worker::spawn_order_execution_worker(pool.clone(), order_client.clone());
 
     let risk_validator = validator::RiskValidator::new(
         config.max_position_size,

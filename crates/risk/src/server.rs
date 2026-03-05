@@ -1,6 +1,5 @@
-use crate::{circuit_breaker::CircuitBreaker, db, validator::RiskValidator};
+use crate::{db, validator::RiskValidator};
 use metrics::{counter, histogram};
-use moria_common::OrderStatus;
 use moria_proto::{
     order::{OrderRequest, order_service_client::OrderServiceClient},
     risk::{
@@ -11,8 +10,7 @@ use moria_proto::{
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::str::FromStr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tonic::{Request, Response, Status, transport::Channel};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -20,8 +18,7 @@ use uuid::Uuid;
 pub struct RiskServer {
     pool: PgPool,
     validator: RiskValidator,
-    order_client: OrderServiceClient<Channel>,
-    order_circuit_breaker: Arc<CircuitBreaker>,
+    _order_client: OrderServiceClient<Channel>,
 }
 
 impl RiskServer {
@@ -33,9 +30,7 @@ impl RiskServer {
         Self {
             pool,
             validator,
-            order_client,
-            // Open circuit after 5 consecutive failures, recover after 30s
-            order_circuit_breaker: Arc::new(CircuitBreaker::new(5, Duration::from_secs(30))),
+            _order_client: order_client,
         }
     }
 
@@ -133,171 +128,44 @@ impl RiskService for RiskServer {
                     }
                 }
 
-                // Check circuit breaker before forwarding to order service
-                if !self.order_circuit_breaker.allow_request() {
-                    counter!("risk_rejected_total", "reason" => "circuit_breaker_open").increment(1);
-                    let reason = "order service circuit breaker is open".to_string();
-                    warn!(signal_id, "Order rejected — circuit breaker open");
-
-                    db::persist_signal_and_trade_in_tx(
-                        &mut risk_tx,
-                        signal_uuid,
-                        &order.symbol,
-                        &order.side,
-                        &order.order_type,
-                        price,
-                        qty,
-                        false,
-                        Some(&reason),
-                        None,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| Status::internal(format!("db error: {e}")))?;
-
-                    risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
-
-                    return Ok(Response::new(RiskDecision {
-                        approved: false,
-                        reason,
-                        signal_id,
-                    }));
-                }
-
-                // Forward to order service
-                let order_req = OrderRequest {
-                    signal_id: signal_id.clone(),
-                    symbol: order.symbol.clone(),
-                    side: order.side.clone(),
-                    order_type: order.order_type.clone(),
-                    price: price.to_string(),
-                    qty: qty.to_string(),
-                };
-                let mut order_client = self.order_client.clone();
-                match tokio::time::timeout(
-                    Duration::from_secs(10),
-                    order_client.place_order(order_req),
+                // Persist risk decision and enqueue downstream execution intent atomically.
+                db::persist_signal_and_trade_in_tx(
+                    &mut risk_tx,
+                    signal_uuid,
+                    &order.symbol,
+                    &order.side,
+                    &order.order_type,
+                    price,
+                    qty,
+                    true,
+                    None,
+                    None,
+                    None,
                 )
                 .await
-                {
-                    Ok(Ok(resp)) => {
-                        self.order_circuit_breaker.record_success();
-                        let order_resp = resp.into_inner();
-                        let status = order_resp.status.parse::<OrderStatus>().unwrap_or(OrderStatus::Rejected);
-                        let is_approved = status.is_successful();
-                        let reject_reason = (!is_approved).then_some(order_resp.message.as_str());
+                .map_err(|e| Status::internal(format!("db error: {e}")))?;
 
-                        db::persist_signal_and_trade_in_tx(
-                            &mut risk_tx,
-                            signal_uuid,
-                            &order.symbol,
-                            &order.side,
-                            &order.order_type,
-                            price,
-                            qty,
-                            is_approved,
-                            reject_reason,
-                            Some(&order_resp.order_id),
-                            Some(&order_resp.status),
-                        )
-                        .await
-                        .map_err(|e| Status::internal(format!("db error: {e}")))?;
+                db::enqueue_order_intent_in_tx(
+                    &mut risk_tx,
+                    Uuid::new_v4(),
+                    signal_uuid,
+                    &order.symbol,
+                    &order.side,
+                    &order.order_type,
+                    price,
+                    qty,
+                )
+                .await
+                .map_err(|e| Status::internal(format!("db error: {e}")))?;
 
-                        risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
+                risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
 
-                        if is_approved {
-                            counter!("risk_approved_total").increment(1);
-                            info!(
-                                signal_id,
-                                order_id = %order_resp.order_id,
-                                status = %order_resp.status,
-                                "Order approved and persisted"
-                            );
-                            RiskDecision {
-                                approved: true,
-                                reason: String::new(),
-                                signal_id,
-                            }
-                        } else {
-                            counter!("risk_rejected_total", "reason" => "downstream_execution")
-                                .increment(1);
-                            warn!(
-                                signal_id,
-                                order_id = %order_resp.order_id,
-                                status = %order_resp.status,
-                                reason = %order_resp.message,
-                                "Order rejected by downstream execution"
-                            );
-                            RiskDecision {
-                                approved: false,
-                                reason: order_resp.message,
-                                signal_id,
-                            }
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        self.order_circuit_breaker.record_failure();
-                        counter!("risk_rejected_total", "reason" => "order_service_error")
-                            .increment(1);
-                        let reason = format!("order service call failed: {e}");
-                        warn!(?e, signal_id, "Failed to place order");
-
-                        db::persist_signal_and_trade_in_tx(
-                            &mut risk_tx,
-                            signal_uuid,
-                            &order.symbol,
-                            &order.side,
-                            &order.order_type,
-                            price,
-                            qty,
-                            false,
-                            Some(&reason),
-                            None,
-                            None,
-                        )
-                        .await
-                        .map_err(|db_err| Status::internal(format!("db error: {db_err}")))?;
-
-                        risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
-
-                        RiskDecision {
-                            approved: false,
-                            reason,
-                            signal_id,
-                        }
-                    }
-                    Err(_) => {
-                        self.order_circuit_breaker.record_failure();
-                        counter!("risk_rejected_total", "reason" => "order_service_timeout")
-                            .increment(1);
-                        let reason = "order service call timed out (order may have been submitted)".to_string();
-                        warn!(signal_id, "Order placement timed out — order status uncertain");
-
-                        // Record as uncertain rather than rejected — the order may have been submitted
-                        db::persist_signal_and_trade_in_tx(
-                            &mut risk_tx,
-                            signal_uuid,
-                            &order.symbol,
-                            &order.side,
-                            &order.order_type,
-                            price,
-                            qty,
-                            false,
-                            Some(&reason),
-                            None,
-                            Some("Uncertain"),
-                        )
-                        .await
-                        .map_err(|db_err| Status::internal(format!("db error: {db_err}")))?;
-
-                        risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
-
-                        RiskDecision {
-                            approved: false,
-                            reason,
-                            signal_id,
-                        }
-                    }
+                counter!("risk_approved_total").increment(1);
+                info!(signal_id, "Order accepted by risk and queued for async execution");
+                RiskDecision {
+                    approved: true,
+                    reason: String::new(),
+                    signal_id,
                 }
             }
             Err(e) => {

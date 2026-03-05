@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::Signed;
 use sqlx::PgPool;
@@ -16,6 +17,18 @@ pub struct RiskState {
     pub daily_realized_pnl: Decimal,
     pub portfolio_notional: Decimal,
     pub daily_peak_pnl: Decimal,
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderIntent {
+    pub id: Uuid,
+    pub signal_id: Uuid,
+    pub symbol: String,
+    pub side: String,
+    pub order_type: String,
+    pub price: Decimal,
+    pub qty: Decimal,
+    pub attempts: i32,
 }
 
 /// Begin a serializable risk check: acquires a row-level lock on the position row
@@ -103,7 +116,207 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(migration_002).execute(pool).await?;
     let migration_003 = include_str!("../../../migrations/003_realized_pnl_and_indexes.sql");
     sqlx::raw_sql(migration_003).execute(pool).await?;
+    let migration_004 = include_str!("../../../migrations/004_order_intents.sql");
+    sqlx::raw_sql(migration_004).execute(pool).await?;
     tracing::info!("Database migrations applied");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn enqueue_order_intent_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+    signal_id: Uuid,
+    symbol: &str,
+    side: &str,
+    order_type: &str,
+    price: Decimal,
+    qty: Decimal,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO order_intents
+            (id, signal_id, symbol, side, order_type, price, qty, status, attempts, next_attempt_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'Pending', 0, now(), now())
+         ON CONFLICT (signal_id) DO NOTHING",
+    )
+    .bind(id)
+    .bind(signal_id)
+    .bind(symbol)
+    .bind(side)
+    .bind(order_type)
+    .bind(price)
+    .bind(qty)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub async fn claim_pending_order_intent(pool: &PgPool) -> Result<Option<OrderIntent>> {
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            String,
+            String,
+            String,
+            Decimal,
+            Decimal,
+            i32,
+            DateTime<Utc>,
+        ),
+    >(
+        "WITH candidate AS (
+            SELECT id
+            FROM order_intents
+            WHERE status IN ('Pending', 'Retry')
+              AND next_attempt_at <= now()
+            ORDER BY created_at
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        )
+        UPDATE order_intents oi
+        SET status = 'InProgress',
+            attempts = oi.attempts + 1,
+            updated_at = now(),
+            last_error = NULL
+        FROM candidate
+        WHERE oi.id = candidate.id
+        RETURNING
+            oi.id,
+            oi.signal_id,
+            oi.symbol,
+            oi.side,
+            oi.order_type,
+            oi.price,
+            oi.qty,
+            oi.attempts,
+            oi.updated_at",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(
+        |(id, signal_id, symbol, side, order_type, price, qty, attempts, _updated_at)| {
+            OrderIntent {
+                id,
+                signal_id,
+                symbol,
+                side,
+                order_type,
+                price,
+                qty,
+                attempts,
+            }
+        },
+    ))
+}
+
+pub async fn mark_order_intent_succeeded(pool: &PgPool, intent_id: Uuid) -> Result<()> {
+    sqlx::query(
+        "UPDATE order_intents
+         SET status = 'Succeeded', updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(intent_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_order_intent_retry(
+    pool: &PgPool,
+    intent_id: Uuid,
+    error: &str,
+    attempts: i32,
+    max_attempts: i32,
+) -> Result<()> {
+    let delay_seconds = i64::from(2_i32.pow(attempts.min(6) as u32));
+    let next_status = if attempts >= max_attempts {
+        "Failed"
+    } else {
+        "Retry"
+    };
+
+    sqlx::query(
+        "UPDATE order_intents
+         SET status = $2,
+             next_attempt_at = now() + ($3::bigint * interval '1 second'),
+             last_error = $4,
+             updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(intent_id)
+    .bind(next_status)
+    .bind(delay_seconds)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_trade_execution(
+    pool: &PgPool,
+    signal_id: Uuid,
+    order_id: &str,
+    symbol: &str,
+    side: &str,
+    price: Decimal,
+    qty: Decimal,
+    status: &str,
+    reject_reason: Option<&str>,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    let realized_pnl = if status == "Filled" {
+        compute_realized_pnl(&mut tx, symbol, side, price, qty).await?
+    } else {
+        Decimal::ZERO
+    };
+
+    sqlx::query(
+        "INSERT INTO trades (id, signal_id, order_id, symbol, side, price, qty, status, realized_pnl)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (signal_id) DO UPDATE
+         SET order_id = EXCLUDED.order_id,
+             symbol = EXCLUDED.symbol,
+             side = EXCLUDED.side,
+             price = EXCLUDED.price,
+             qty = EXCLUDED.qty,
+             status = EXCLUDED.status,
+             realized_pnl = EXCLUDED.realized_pnl,
+             created_at = now()",
+    )
+    .bind(Uuid::new_v4())
+    .bind(signal_id)
+    .bind(order_id)
+    .bind(symbol)
+    .bind(side)
+    .bind(price)
+    .bind(qty)
+    .bind(status)
+    .bind(realized_pnl)
+    .execute(&mut *tx)
+    .await?;
+
+    if status == "Filled" {
+        apply_filled_trade_to_position(&mut tx, symbol, side, price, qty).await?;
+    }
+
+    if let Some(reason) = reject_reason {
+        sqlx::query(
+            "UPDATE signals
+             SET reject_reason = $2
+             WHERE id = $1",
+        )
+        .bind(signal_id)
+        .bind(reason)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
     Ok(())
 }
 
