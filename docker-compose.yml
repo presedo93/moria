@@ -58,6 +58,7 @@ services:
       BYBIT_WS_URL: wss://stream-testnet.bybit.com/v5/public/linear
       TRADING_PAIR: BTCUSDT
       KLINE_INTERVAL: "1"
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
       MARKET_DATA_GRPC_ADDR: "0.0.0.0:50051"
       METRICS_ADDR: "0.0.0.0:9101"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
@@ -89,6 +90,7 @@ services:
     environment:
       TRADING_PAIR: BTCUSDT
       KLINE_INTERVAL: "1"
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
       SMA_SHORT_PERIOD: "10"
       SMA_LONG_PERIOD: "30"
       ORDER_QTY: "0.001"
@@ -127,6 +129,7 @@ services:
           path: migrations/
     environment:
       DATABASE_URL: postgres://moria:moria@postgres:5432/moria
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
       MAX_POSITION_SIZE: "1.0"
       MAX_DAILY_LOSS: "100.0"
       ORDER_GRPC_ADDR: order:50054
@@ -163,6 +166,7 @@ services:
     environment:
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
       BYBIT_REST_URL: https://api-testnet.bybit.com
       ORDER_GRPC_ADDR: "0.0.0.0:50054"
       METRICS_ADDR: "0.0.0.0:9104"
@@ -196,6 +200,7 @@ services:
           path: migrations/
     environment:
       DATABASE_URL: postgres://moria:moria@postgres:5432/moria
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
       ORDER_GRPC_ADDR: order:50054
       METRICS_ADDR: "0.0.0.0:9105"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317

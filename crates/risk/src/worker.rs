@@ -11,9 +11,13 @@ use tracing::{info, warn};
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_ATTEMPTS: i32 = 8;
 
-pub fn spawn_order_execution_worker(pool: PgPool, order_client: OrderServiceClient<Channel>) {
+pub fn spawn_order_execution_worker(
+    pool: PgPool,
+    order_client: OrderServiceClient<Channel>,
+    internal_service_token: Option<String>,
+) {
     tokio::spawn(async move {
-        if let Err(e) = run_order_execution_worker(pool, order_client).await {
+        if let Err(e) = run_order_execution_worker(pool, order_client, internal_service_token).await {
             warn!(?e, "Order execution worker exited");
         }
     });
@@ -22,6 +26,7 @@ pub fn spawn_order_execution_worker(pool: PgPool, order_client: OrderServiceClie
 async fn run_order_execution_worker(
     pool: PgPool,
     mut order_client: OrderServiceClient<Channel>,
+    internal_service_token: Option<String>,
 ) -> Result<()> {
     info!("Order execution worker started");
 
@@ -40,8 +45,13 @@ async fn run_order_execution_worker(
             price: intent.price.to_string(),
             qty: intent.qty.to_string(),
         };
+        let mut grpc_request = tonic::Request::new(request);
+        moria_common::auth::attach_internal_token(
+            &mut grpc_request,
+            internal_service_token.as_deref(),
+        )?;
 
-        match tokio::time::timeout(Duration::from_secs(10), order_client.place_order(request)).await {
+        match tokio::time::timeout(Duration::from_secs(10), order_client.place_order(grpc_request)).await {
             Ok(Ok(response)) => {
                 let result = response.into_inner();
                 let status = result.status.clone();

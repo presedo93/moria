@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                if let Err(e) = reconcile_once(&pool, &mut order_client).await {
+                if let Err(e) = reconcile_once(&pool, &mut order_client, config.internal_service_token.as_deref()).await {
                     warn!(?e, "Reconciliation tick failed");
                 }
             }
@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
 async fn reconcile_once(
     pool: &PgPool,
     order_client: &mut OrderServiceClient<Channel>,
+    internal_token: Option<&str>,
 ) -> Result<()> {
     let pending = fetch_pending_trades(pool).await?;
     if pending.is_empty() {
@@ -74,14 +75,14 @@ async fn reconcile_once(
     }
 
     for trade in pending {
-        let response = tokio::time::timeout(
-            Duration::from_secs(5),
-            order_client.get_order_status(OrderStatusRequest {
-                order_id: trade.order_id.clone(),
-                symbol: trade.symbol.clone(),
-            }),
-        )
-        .await;
+        let mut grpc_request = tonic::Request::new(OrderStatusRequest {
+            order_id: trade.order_id.clone(),
+            symbol: trade.symbol.clone(),
+        });
+        moria_common::auth::attach_internal_token(&mut grpc_request, internal_token)?;
+        let response =
+            tokio::time::timeout(Duration::from_secs(5), order_client.get_order_status(grpc_request))
+                .await;
 
         let status_resp = match response {
             Ok(Ok(resp)) => resp.into_inner(),

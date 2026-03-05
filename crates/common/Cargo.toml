@@ -15,3 +15,4 @@ opentelemetry-otlp.workspace = true
 anyhow.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+tonic.workspace = true

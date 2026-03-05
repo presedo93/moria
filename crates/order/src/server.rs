@@ -13,12 +13,14 @@ use tracing::info;
 
 pub struct OrderServer {
     rest_client: Arc<BybitRestClient>,
+    internal_service_token: Option<String>,
 }
 
 impl OrderServer {
-    pub fn new(rest_client: BybitRestClient) -> Self {
+    pub fn new(rest_client: BybitRestClient, internal_service_token: Option<String>) -> Self {
         Self {
             rest_client: Arc::new(rest_client),
+            internal_service_token,
         }
     }
 
@@ -34,6 +36,7 @@ impl OrderService for OrderServer {
         &self,
         request: Request<OrderRequest>,
     ) -> Result<Response<OrderResponse>, Status> {
+        moria_common::auth::authorize_request(&request, self.internal_service_token.as_deref())?;
         let started = Instant::now();
         counter!("order_place_order_requests_total").increment(1);
 
@@ -73,6 +76,7 @@ impl OrderService for OrderServer {
         &self,
         request: Request<OrderStatusRequest>,
     ) -> Result<Response<OrderStatusResponse>, Status> {
+        moria_common::auth::authorize_request(&request, self.internal_service_token.as_deref())?;
         let req = request.into_inner();
         let result = self
             .rest_client

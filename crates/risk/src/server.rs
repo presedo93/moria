@@ -20,6 +20,7 @@ pub struct RiskServer {
     pool: PgPool,
     validator: RiskValidator,
     _order_client: OrderServiceClient<Channel>,
+    internal_service_token: Option<String>,
 }
 
 impl RiskServer {
@@ -27,11 +28,13 @@ impl RiskServer {
         pool: PgPool,
         validator: RiskValidator,
         order_client: OrderServiceClient<Channel>,
+        internal_service_token: Option<String>,
     ) -> Self {
         Self {
             pool,
             validator,
             _order_client: order_client,
+            internal_service_token,
         }
     }
 
@@ -52,6 +55,7 @@ impl RiskService for RiskServer {
         &self,
         request: Request<OrderRequest>,
     ) -> Result<Response<RiskDecision>, Status> {
+        moria_common::auth::authorize_request(&request, self.internal_service_token.as_deref())?;
         let started = Instant::now();
         counter!("risk_validate_order_requests_total").increment(1);
 
@@ -324,6 +328,7 @@ mod integration_tests {
             pool.clone(),
             RiskValidator::new(dec("1.0"), dec("100.0"), dec("10000.0"), dec("500.0")),
             OrderServiceClient::new(order_channel),
+            None,
         );
 
         let buy_signal_id = Uuid::new_v4().to_string();
@@ -417,6 +422,7 @@ mod integration_tests {
             pool.clone(),
             RiskValidator::new(dec("1.0"), dec("100.0"), dec("10000.0"), dec("500.0")),
             OrderServiceClient::new(order_channel),
+            None,
         );
 
         let signal_id = Uuid::new_v4().to_string();
@@ -477,6 +483,7 @@ mod integration_tests {
             pool.clone(),
             RiskValidator::new(dec("1.0"), dec("100.0"), dec("10000.0"), dec("500.0")),
             OrderServiceClient::new(order_channel),
+            None,
         );
 
         let signal_id = Uuid::new_v4().to_string();

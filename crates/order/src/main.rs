@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
         config.bybit_api_secret,
     );
 
-    let grpc_server = server::OrderServer::new(rest_client);
+    let grpc_server = server::OrderServer::new(rest_client, config.internal_service_token.clone());
     let (health_reporter, health_service) = health_reporter();
     health_reporter
         .set_serving::<moria_proto::order::order_service_server::OrderServiceServer<server::OrderServer>>()

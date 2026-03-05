@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 pub struct Config {
     pub bybit_api_key: String,
     pub bybit_api_secret: String,
+    pub internal_service_token: Option<String>,
     pub bybit_ws_url: String,
     pub bybit_rest_url: String,
     pub trading_pair: String,
@@ -36,6 +37,14 @@ impl Config {
         Self {
             bybit_api_key: env::var("BYBIT_API_KEY").unwrap_or_default(),
             bybit_api_secret: env::var("BYBIT_API_SECRET").unwrap_or_default(),
+            internal_service_token: env::var("INTERNAL_SERVICE_TOKEN").ok().and_then(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }),
             bybit_ws_url: env::var("BYBIT_WS_URL")
                 .unwrap_or_else(|_| "wss://stream-testnet.bybit.com/v5/public/linear".into()),
             bybit_rest_url: env::var("BYBIT_REST_URL")

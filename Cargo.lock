@@ -1449,6 +1449,7 @@ dependencies = [
  "opentelemetry_sdk",
  "rust_decimal",
  "serde",
+ "tonic 0.13.1",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

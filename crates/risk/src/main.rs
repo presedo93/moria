@@ -52,7 +52,11 @@ async fn main() -> Result<()> {
     .await
     .context("Failed to connect to order service")?;
     let order_client = OrderServiceClient::new(order_channel);
-    worker::spawn_order_execution_worker(pool.clone(), order_client.clone());
+    worker::spawn_order_execution_worker(
+        pool.clone(),
+        order_client.clone(),
+        config.internal_service_token.clone(),
+    );
 
     let risk_validator = validator::RiskValidator::new(
         config.max_position_size,
@@ -61,7 +65,12 @@ async fn main() -> Result<()> {
         config.max_drawdown,
     );
 
-    let grpc_server = server::RiskServer::new(pool, risk_validator, order_client);
+    let grpc_server = server::RiskServer::new(
+        pool,
+        risk_validator,
+        order_client,
+        config.internal_service_token.clone(),
+    );
     let (health_reporter, health_service) = health_reporter();
     health_reporter
         .set_serving::<moria_proto::risk::risk_service_server::RiskServiceServer<server::RiskServer>>()

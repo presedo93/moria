@@ -26,6 +26,7 @@ pub struct StrategyEngine {
     warm_up_period: usize,
     signal_queue_capacity: usize,
     signal_max_inflight: usize,
+    internal_service_token: Option<String>,
 }
 
 struct PendingSignal {
@@ -45,6 +46,7 @@ impl StrategyEngine {
         warm_up_period: usize,
         signal_queue_capacity: usize,
         signal_max_inflight: usize,
+        internal_service_token: Option<String>,
     ) -> Self {
         Self {
             symbol,
@@ -57,6 +59,7 @@ impl StrategyEngine {
             warm_up_period,
             signal_queue_capacity,
             signal_max_inflight,
+            internal_service_token,
         }
     }
 
@@ -169,6 +172,7 @@ impl StrategyEngine {
         let risk_client_for_dispatch = risk_client.clone();
         let symbol_for_dispatch = self.symbol.clone();
         let qty_for_dispatch = self.qty;
+        let internal_token_for_dispatch = self.internal_service_token.clone();
         let inflight_for_dispatch = inflight.clone();
 
         tokio::spawn(async move {
@@ -179,9 +183,17 @@ impl StrategyEngine {
                 };
                 let risk_client = risk_client_for_dispatch.clone();
                 let symbol = symbol_for_dispatch.clone();
+                let internal_token = internal_token_for_dispatch.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    Self::send_signal_with_retry(pending.side, pending.price, risk_client, &symbol, qty_for_dispatch).await;
+                    Self::send_signal_with_retry(
+                        pending.side,
+                        pending.price,
+                        risk_client,
+                        &symbol,
+                        qty_for_dispatch,
+                        internal_token.as_deref(),
+                    ).await;
                 });
             }
         });
@@ -247,6 +259,7 @@ impl StrategyEngine {
         symbol: &str,
         qty: Decimal,
         signal_id: &str,
+        internal_token: Option<&str>,
     ) -> bool {
         let request = OrderRequest {
             signal_id: signal_id.to_string(),
@@ -256,8 +269,13 @@ impl StrategyEngine {
             price: price.to_string(),
             qty: qty.to_string(),
         };
+        let mut grpc_request = tonic::Request::new(request);
+        if moria_common::auth::attach_internal_token(&mut grpc_request, internal_token).is_err() {
+            warn!(signal_id, "Failed to attach internal auth token");
+            return false;
+        }
 
-        match tokio::time::timeout(Duration::from_secs(5), risk_client.validate_order(request)).await {
+        match tokio::time::timeout(Duration::from_secs(5), risk_client.validate_order(grpc_request)).await {
             Ok(Ok(response)) => {
                 let decision = response.into_inner();
                 if decision.approved {
@@ -288,6 +306,7 @@ impl StrategyEngine {
         risk_client: RiskServiceClient<Channel>,
         symbol: &str,
         qty: Decimal,
+        internal_token: Option<&str>,
     ) {
         let signal_id = uuid::Uuid::new_v4().to_string();
         const MAX_ATTEMPTS: u32 = 3;
@@ -299,6 +318,7 @@ impl StrategyEngine {
                 symbol,
                 qty,
                 &signal_id,
+                internal_token,
             )
             .await;
             if delivered {
