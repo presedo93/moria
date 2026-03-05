@@ -9,6 +9,7 @@ use tracing::info;
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::from_env();
+    config.validate_for_service("strategy")?;
     moria_common::telemetry::init_tracing("strategy")?;
     moria_common::telemetry::init_metrics("strategy", config.metrics_addr.as_deref())?;
 

@@ -24,6 +24,7 @@ struct PendingTrade {
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::from_env();
+    config.validate_for_service("reconciler")?;
     moria_common::telemetry::init_tracing("reconciler")?;
     moria_common::telemetry::init_metrics("reconciler", config.metrics_addr.as_deref())?;
 

@@ -11,6 +11,7 @@ use tracing::info;
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::from_env();
+    config.validate_for_service("order")?;
     moria_common::telemetry::init_tracing("order")?;
     moria_common::telemetry::init_metrics("order", config.metrics_addr.as_deref())?;
 

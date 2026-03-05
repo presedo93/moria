@@ -2,6 +2,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::env;
 use std::str::FromStr;
+use anyhow::{Result, bail};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -98,5 +99,57 @@ impl Config {
             risk_grpc_addr: env::var("RISK_GRPC_ADDR").unwrap_or_else(|_| "[::1]:50053".into()),
             order_grpc_addr: env::var("ORDER_GRPC_ADDR").unwrap_or_else(|_| "[::1]:50054".into()),
         }
+    }
+
+    pub fn validate_for_service(&self, service: &str) -> Result<()> {
+        if self.trading_pair.trim().is_empty() {
+            bail!("TRADING_PAIR must not be empty");
+        }
+        if self.kline_interval.trim().is_empty() {
+            bail!("KLINE_INTERVAL must not be empty");
+        }
+        if self.sma_short_period == 0 || self.sma_long_period == 0 {
+            bail!("SMA periods must be > 0");
+        }
+        if self.sma_short_period >= self.sma_long_period {
+            bail!("SMA_SHORT_PERIOD must be smaller than SMA_LONG_PERIOD");
+        }
+        if self.order_qty <= Decimal::ZERO {
+            bail!("ORDER_QTY must be > 0");
+        }
+        if self.max_position_size <= Decimal::ZERO {
+            bail!("MAX_POSITION_SIZE must be > 0");
+        }
+        if self.max_daily_loss <= Decimal::ZERO {
+            bail!("MAX_DAILY_LOSS must be > 0");
+        }
+        if self.max_portfolio_notional <= Decimal::ZERO {
+            bail!("MAX_PORTFOLIO_NOTIONAL must be > 0");
+        }
+        if self.max_drawdown <= Decimal::ZERO {
+            bail!("MAX_DRAWDOWN must be > 0");
+        }
+        if self.signal_queue_capacity == 0 {
+            bail!("SIGNAL_QUEUE_CAPACITY must be > 0");
+        }
+        if self.signal_max_inflight == 0 {
+            bail!("SIGNAL_MAX_INFLIGHT must be > 0");
+        }
+
+        match service {
+            "order" => {
+                if self.bybit_api_key.trim().is_empty() || self.bybit_api_secret.trim().is_empty() {
+                    bail!("BYBIT_API_KEY and BYBIT_API_SECRET are required for order service");
+                }
+            }
+            "risk" | "reconciler" => {
+                if self.database_url.trim().is_empty() {
+                    bail!("DATABASE_URL is required for {service} service");
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
     }
 }
