@@ -6,6 +6,7 @@ members = [
     "crates/strategy",
     "crates/order",
     "crates/risk",
+    "crates/reconciler",
 ]
 resolver = "2"
 

@@ -20,3 +20,4 @@ COPY --from=builder /app/target/release/moria-market-data /usr/local/bin/
 COPY --from=builder /app/target/release/moria-strategy    /usr/local/bin/
 COPY --from=builder /app/target/release/moria-order       /usr/local/bin/
 COPY --from=builder /app/target/release/moria-risk        /usr/local/bin/
+COPY --from=builder /app/target/release/moria-reconciler  /usr/local/bin/

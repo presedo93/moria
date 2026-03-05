@@ -1,7 +1,7 @@
 use crate::bybit_rest::BybitRestClient;
 use metrics::{counter, histogram};
 use moria_proto::order::{
-    OrderRequest, OrderResponse,
+    OrderRequest, OrderResponse, OrderStatusRequest, OrderStatusResponse,
     order_service_server::{OrderService, OrderServiceServer},
 };
 use rust_decimal::Decimal;
@@ -62,6 +62,25 @@ impl OrderService for OrderServer {
         histogram!("order_place_order_latency_seconds").record(started.elapsed().as_secs_f64());
 
         Ok(Response::new(OrderResponse {
+            order_id: result.order_id,
+            status: result.status,
+            message: result.message,
+        }))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn get_order_status(
+        &self,
+        request: Request<OrderStatusRequest>,
+    ) -> Result<Response<OrderStatusResponse>, Status> {
+        let req = request.into_inner();
+        let result = self
+            .rest_client
+            .get_order_status(&req.symbol, &req.order_id)
+            .await
+            .map_err(|e| Status::internal(format!("order status lookup failed: {e}")))?;
+
+        Ok(Response::new(OrderStatusResponse {
             order_id: result.order_id,
             status: result.status,
             message: result.message,

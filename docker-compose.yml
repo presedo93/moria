@@ -175,5 +175,40 @@ services:
       otel-collector:
         condition: service_started
 
+  reconciler:
+    build: .
+    command: moria-reconciler
+    develop:
+      watch:
+        - action: rebuild
+          path: crates/reconciler/
+        - action: rebuild
+          path: crates/common/
+        - action: rebuild
+          path: crates/proto/
+        - action: rebuild
+          path: proto/
+        - action: rebuild
+          path: Cargo.toml
+        - action: rebuild
+          path: Cargo.lock
+        - action: rebuild
+          path: migrations/
+    environment:
+      DATABASE_URL: postgres://moria:moria@postgres:5432/moria
+      ORDER_GRPC_ADDR: order:50054
+      METRICS_ADDR: "0.0.0.0:9105"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RUST_LOG: info,reconciler=debug
+    ports:
+      - "9105:9105"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      order:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+
 volumes:
   pgdata:

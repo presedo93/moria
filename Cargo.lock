@@ -1509,6 +1509,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "moria-reconciler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "metrics",
+ "moria-common",
+ "moria-proto",
+ "sqlx",
+ "tokio",
+ "tonic 0.13.1",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "moria-risk"
 version = "0.1.0"
 dependencies = [

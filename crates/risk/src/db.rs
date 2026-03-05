@@ -118,6 +118,8 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(migration_003).execute(pool).await?;
     let migration_004 = include_str!("../../../migrations/004_order_intents.sql");
     sqlx::raw_sql(migration_004).execute(pool).await?;
+    let migration_005 = include_str!("../../../migrations/005_trade_reconciliation_index.sql");
+    sqlx::raw_sql(migration_005).execute(pool).await?;
     tracing::info!("Database migrations applied");
     Ok(())
 }

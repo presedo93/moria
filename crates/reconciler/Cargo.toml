@@ -1,0 +1,16 @@
+[package]
+name = "moria-reconciler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+moria-common = { path = "../common" }
+moria-proto = { path = "../proto" }
+anyhow.workspace = true
+chrono.workspace = true
+metrics.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+uuid.workspace = true

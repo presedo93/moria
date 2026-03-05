@@ -17,6 +17,13 @@ pub struct OrderResult {
     pub message: String,
 }
 
+#[derive(Debug)]
+pub struct OrderStatusResult {
+    pub order_id: String,
+    pub status: String,
+    pub message: String,
+}
+
 pub struct BybitRestClient {
     client: reqwest::Client,
     base_url: String,
@@ -127,6 +134,60 @@ impl BybitRestClient {
             HmacSha256::new_from_slice(self.api_secret.as_bytes()).expect("HMAC accepts any key");
         mac.update(payload.as_bytes());
         hex::encode(mac.finalize().into_bytes())
+    }
+
+    #[tracing::instrument(skip(self))]
+    pub async fn get_order_status(&self, symbol: &str, order_id: &str) -> Result<OrderStatusResult> {
+        let body = serde_json::json!({
+            "category": "linear",
+            "symbol": symbol,
+            "orderId": order_id
+        });
+        let body_str = body.to_string();
+        let timestamp = now_ms();
+        let signature = self.sign(timestamp, &body_str);
+        let started = std::time::Instant::now();
+
+        let url = format!("{}/v5/order/realtime", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .header("X-BAPI-API-KEY", &self.api_key)
+            .header("X-BAPI-SIGN", &signature)
+            .header("X-BAPI-SIGN-TYPE", "2")
+            .header("X-BAPI-TIMESTAMP", timestamp.to_string())
+            .header("X-BAPI-RECV-WINDOW", RECV_WINDOW.to_string())
+            .header("Content-Type", "application/json")
+            .body(body_str)
+            .send()
+            .await
+            .context("Failed to send order status request")?
+            .json::<serde_json::Value>()
+            .await
+            .context("Failed to parse order status response")?;
+        histogram!("order_bybit_status_http_latency_seconds").record(started.elapsed().as_secs_f64());
+
+        let ret_code = response["retCode"].as_i64().unwrap_or(-1);
+        let ret_msg = response["retMsg"].as_str().unwrap_or("unknown");
+        if ret_code != 0 {
+            counter!("order_bybit_status_total", "result" => "error").increment(1);
+            return Ok(OrderStatusResult {
+                order_id: order_id.to_string(),
+                status: "Unknown".to_string(),
+                message: format!("retCode={ret_code}: {ret_msg}"),
+            });
+        }
+
+        let status = response["result"]["list"][0]["orderStatus"]
+            .as_str()
+            .unwrap_or("Unknown")
+            .to_string();
+        counter!("order_bybit_status_total", "result" => "ok", "status" => status.clone()).increment(1);
+        Ok(OrderStatusResult {
+            order_id: order_id.to_string(),
+            status,
+            message: ret_msg.to_string(),
+        })
     }
 }
 

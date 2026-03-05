@@ -17,6 +17,18 @@ message OrderResponse {
   string message = 3;
 }
 
+message OrderStatusRequest {
+  string order_id = 1;
+  string symbol = 2;
+}
+
+message OrderStatusResponse {
+  string order_id = 1;
+  string status = 2;
+  string message = 3;
+}
+
 service OrderService {
   rpc PlaceOrder(OrderRequest) returns (OrderResponse);
+  rpc GetOrderStatus(OrderStatusRequest) returns (OrderStatusResponse);
 }
