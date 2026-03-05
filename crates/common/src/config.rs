@@ -15,6 +15,8 @@ pub struct Config {
     pub sma_short_period: usize,
     pub sma_long_period: usize,
     pub order_qty: Decimal,
+    pub signal_queue_capacity: usize,
+    pub signal_max_inflight: usize,
     pub max_position_size: Decimal,
     pub max_daily_loss: Decimal,
     pub max_portfolio_notional: Decimal,
@@ -53,6 +55,14 @@ impl Config {
                 .ok()
                 .and_then(|v| Decimal::from_str(&v).ok())
                 .unwrap_or_else(|| Decimal::from_str("0.001").expect("valid decimal")),
+            signal_queue_capacity: env::var("SIGNAL_QUEUE_CAPACITY")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(256),
+            signal_max_inflight: env::var("SIGNAL_MAX_INFLIGHT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16),
             max_position_size: env::var("MAX_POSITION_SIZE")
                 .ok()
                 .and_then(|v| Decimal::from_str(&v).ok())

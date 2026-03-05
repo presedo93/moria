@@ -39,6 +39,8 @@ async fn main() -> Result<()> {
         config.risk_grpc_addr,
         config.bybit_rest_url,
         config.sma_long_period,
+        config.signal_queue_capacity,
+        config.signal_max_inflight,
     );
 
     // Run engine with graceful shutdown on SIGTERM/SIGINT

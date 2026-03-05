@@ -8,7 +8,9 @@ use moria_proto::{
 };
 use rust_decimal::Decimal;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{Semaphore, mpsc};
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
 use tracing::{info, warn};
@@ -22,6 +24,13 @@ pub struct StrategyEngine {
     risk_addr: String,
     bybit_rest_url: String,
     warm_up_period: usize,
+    signal_queue_capacity: usize,
+    signal_max_inflight: usize,
+}
+
+struct PendingSignal {
+    side: &'static str,
+    price: Decimal,
 }
 
 impl StrategyEngine {
@@ -34,6 +43,8 @@ impl StrategyEngine {
         risk_addr: String,
         bybit_rest_url: String,
         warm_up_period: usize,
+        signal_queue_capacity: usize,
+        signal_max_inflight: usize,
     ) -> Self {
         Self {
             symbol,
@@ -44,6 +55,8 @@ impl StrategyEngine {
             risk_addr,
             bybit_rest_url,
             warm_up_period,
+            signal_queue_capacity,
+            signal_max_inflight,
         }
     }
 
@@ -150,6 +163,29 @@ impl StrategyEngine {
             .into_inner();
 
         let strategy_name = self.strategy.name().to_owned();
+        let (signal_tx, mut signal_rx) = mpsc::channel::<PendingSignal>(self.signal_queue_capacity);
+        let max_inflight = self.signal_max_inflight.max(1);
+        let inflight = Arc::new(Semaphore::new(max_inflight));
+        let risk_client_for_dispatch = risk_client.clone();
+        let symbol_for_dispatch = self.symbol.clone();
+        let qty_for_dispatch = self.qty;
+        let inflight_for_dispatch = inflight.clone();
+
+        tokio::spawn(async move {
+            while let Some(pending) = signal_rx.recv().await {
+                let permit = match inflight_for_dispatch.clone().acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
+                let risk_client = risk_client_for_dispatch.clone();
+                let symbol = symbol_for_dispatch.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    Self::send_signal_with_retry(pending.side, pending.price, risk_client, &symbol, qty_for_dispatch).await;
+                });
+            }
+        });
+
         info!(symbol = %self.symbol, strategy = %strategy_name, "Strategy engine started, consuming klines");
 
         while let Some(kline) = stream.next().await {
@@ -184,18 +220,18 @@ impl StrategyEngine {
                 Signal::Buy => {
                     counter!("strategy_signals_total", "side" => "Buy").increment(1);
                     info!(%close, "BUY signal detected");
-                    Self::spawn_signal(
-                        "Buy", close, risk_client.clone(),
-                        self.symbol.clone(), self.qty,
-                    );
+                    if signal_tx.try_send(PendingSignal { side: "Buy", price: close }).is_err() {
+                        counter!("strategy_signal_enqueue_dropped_total").increment(1);
+                        warn!("Signal queue full; dropping BUY signal");
+                    }
                 }
                 Signal::Sell => {
                     counter!("strategy_signals_total", "side" => "Sell").increment(1);
                     info!(%close, "SELL signal detected");
-                    Self::spawn_signal(
-                        "Sell", close, risk_client.clone(),
-                        self.symbol.clone(), self.qty,
-                    );
+                    if signal_tx.try_send(PendingSignal { side: "Sell", price: close }).is_err() {
+                        counter!("strategy_signal_enqueue_dropped_total").increment(1);
+                        warn!("Signal queue full; dropping SELL signal");
+                    }
                 }
                 Signal::None => {}
             }
@@ -204,30 +240,16 @@ impl StrategyEngine {
         Ok(())
     }
 
-    /// Dispatch signal to risk service asynchronously so kline processing isn't blocked.
-    fn spawn_signal(
-        side: &str,
-        price: Decimal,
-        risk_client: RiskServiceClient<Channel>,
-        symbol: String,
-        qty: Decimal,
-    ) {
-        let side = side.to_string();
-        tokio::spawn(async move {
-            Self::send_signal(&side, price, risk_client, &symbol, qty).await;
-        });
-    }
-
-    async fn send_signal(
+    async fn send_signal_once(
         side: &str,
         price: Decimal,
         mut risk_client: RiskServiceClient<Channel>,
         symbol: &str,
         qty: Decimal,
-    ) {
-        let signal_id = uuid::Uuid::new_v4().to_string();
+        signal_id: &str,
+    ) -> bool {
         let request = OrderRequest {
-            signal_id: signal_id.clone(),
+            signal_id: signal_id.to_string(),
             symbol: symbol.to_string(),
             side: side.to_string(),
             order_type: "Market".to_string(),
@@ -235,12 +257,7 @@ impl StrategyEngine {
             qty: qty.to_string(),
         };
 
-        match tokio::time::timeout(
-            Duration::from_secs(5),
-            risk_client.validate_order(request),
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_secs(5), risk_client.validate_order(request)).await {
             Ok(Ok(response)) => {
                 let decision = response.into_inner();
                 if decision.approved {
@@ -250,16 +267,57 @@ impl StrategyEngine {
                     counter!("strategy_risk_decision_total", "decision" => "rejected").increment(1);
                     warn!(signal_id, reason = %decision.reason, "Order rejected by risk service");
                 }
+                true
             }
             Ok(Err(e)) => {
                 counter!("strategy_risk_decision_total", "decision" => "error").increment(1);
                 warn!(?e, signal_id, "Failed to contact risk service");
+                false
             }
             Err(_) => {
                 counter!("strategy_risk_decision_total", "decision" => "timeout").increment(1);
                 warn!(signal_id, "Risk validation timed out");
+                false
             }
         }
+    }
+
+    async fn send_signal_with_retry(
+        side: &str,
+        price: Decimal,
+        risk_client: RiskServiceClient<Channel>,
+        symbol: &str,
+        qty: Decimal,
+    ) {
+        let signal_id = uuid::Uuid::new_v4().to_string();
+        const MAX_ATTEMPTS: u32 = 3;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let delivered = Self::send_signal_once(
+                side,
+                price,
+                risk_client.clone(),
+                symbol,
+                qty,
+                &signal_id,
+            )
+            .await;
+            if delivered {
+                if attempt > 1 {
+                    counter!("strategy_signal_retry_total", "result" => "recovered").increment(1);
+                }
+                return;
+            }
+
+            if attempt < MAX_ATTEMPTS {
+                let backoff_ms = 250 * (1_u64 << (attempt - 1));
+                let jitter_ms = (signal_id.as_bytes()[0] as u64) % 120;
+                tokio::time::sleep(Duration::from_millis(backoff_ms + jitter_ms)).await;
+                counter!("strategy_signal_retry_total", "result" => "retry").increment(1);
+            }
+        }
+
+        counter!("strategy_signal_retry_total", "result" => "exhausted").increment(1);
+        warn!(signal_id, "Exhausted signal delivery retries");
     }
 }
 
