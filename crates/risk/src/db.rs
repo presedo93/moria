@@ -123,6 +123,8 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(migration_005).execute(pool).await?;
     let migration_006 = include_str!("../../../migrations/006_domain_events.sql");
     sqlx::raw_sql(migration_006).execute(pool).await?;
+    let migration_007 = include_str!("../../../migrations/007_backtest_leaderboard.sql");
+    sqlx::raw_sql(migration_007).execute(pool).await?;
     tracing::info!("Database migrations applied");
     Ok(())
 }

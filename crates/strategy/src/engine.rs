@@ -7,6 +7,7 @@ use moria_proto::{
     risk::risk_service_client::RiskServiceClient,
 };
 use rust_decimal::Decimal;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,12 +27,19 @@ pub struct StrategyEngine {
     warm_up_period: usize,
     signal_queue_capacity: usize,
     signal_max_inflight: usize,
+    account_equity_usd: Decimal,
+    risk_budget_pct: Decimal,
+    max_notional_per_trade: Decimal,
+    volatility_window: usize,
+    min_volatility: Decimal,
     internal_service_token: Option<String>,
+    close_history: Vec<Decimal>,
 }
 
 struct PendingSignal {
     side: &'static str,
     price: Decimal,
+    qty: Decimal,
 }
 
 impl StrategyEngine {
@@ -46,6 +54,11 @@ impl StrategyEngine {
         warm_up_period: usize,
         signal_queue_capacity: usize,
         signal_max_inflight: usize,
+        account_equity_usd: Decimal,
+        risk_budget_pct: Decimal,
+        max_notional_per_trade: Decimal,
+        volatility_window: usize,
+        min_volatility: Decimal,
         internal_service_token: Option<String>,
     ) -> Self {
         Self {
@@ -59,7 +72,13 @@ impl StrategyEngine {
             warm_up_period,
             signal_queue_capacity,
             signal_max_inflight,
+            account_equity_usd,
+            risk_budget_pct,
+            max_notional_per_trade,
+            volatility_window,
+            min_volatility,
             internal_service_token,
+            close_history: Vec::with_capacity(volatility_window + 1),
         }
     }
 
@@ -171,7 +190,6 @@ impl StrategyEngine {
         let inflight = Arc::new(Semaphore::new(max_inflight));
         let risk_client_for_dispatch = risk_client.clone();
         let symbol_for_dispatch = self.symbol.clone();
-        let qty_for_dispatch = self.qty;
         let internal_token_for_dispatch = self.internal_service_token.clone();
         let inflight_for_dispatch = inflight.clone();
 
@@ -191,7 +209,7 @@ impl StrategyEngine {
                         pending.price,
                         risk_client,
                         &symbol,
-                        qty_for_dispatch,
+                        pending.qty,
                         internal_token.as_deref(),
                     ).await;
                 });
@@ -223,6 +241,7 @@ impl StrategyEngine {
                     continue;
                 }
             };
+            self.record_close(close);
 
             let signal = self.strategy.push(close);
 
@@ -231,16 +250,18 @@ impl StrategyEngine {
             match signal {
                 Signal::Buy => {
                     counter!("strategy_signals_total", "side" => "Buy").increment(1);
-                    info!(%close, "BUY signal detected");
-                    if signal_tx.try_send(PendingSignal { side: "Buy", price: close }).is_err() {
+                    let qty = self.sized_qty(close);
+                    info!(%close, %qty, "BUY signal detected");
+                    if signal_tx.try_send(PendingSignal { side: "Buy", price: close, qty }).is_err() {
                         counter!("strategy_signal_enqueue_dropped_total").increment(1);
                         warn!("Signal queue full; dropping BUY signal");
                     }
                 }
                 Signal::Sell => {
                     counter!("strategy_signals_total", "side" => "Sell").increment(1);
-                    info!(%close, "SELL signal detected");
-                    if signal_tx.try_send(PendingSignal { side: "Sell", price: close }).is_err() {
+                    let qty = self.sized_qty(close);
+                    info!(%close, %qty, "SELL signal detected");
+                    if signal_tx.try_send(PendingSignal { side: "Sell", price: close, qty }).is_err() {
                         counter!("strategy_signal_enqueue_dropped_total").increment(1);
                         warn!("Signal queue full; dropping SELL signal");
                     }
@@ -338,6 +359,55 @@ impl StrategyEngine {
 
         counter!("strategy_signal_retry_total", "result" => "exhausted").increment(1);
         warn!(signal_id, "Exhausted signal delivery retries");
+    }
+
+    fn record_close(&mut self, close: Decimal) {
+        self.close_history.push(close);
+        if self.close_history.len() > self.volatility_window {
+            let remove_count = self.close_history.len() - self.volatility_window;
+            self.close_history.drain(0..remove_count);
+        }
+    }
+
+    fn sized_qty(&self, price: Decimal) -> Decimal {
+        if price <= Decimal::ZERO {
+            return self.qty;
+        }
+
+        let base_notional = self.qty * price;
+        if base_notional <= Decimal::ZERO {
+            return self.qty;
+        }
+
+        let volatility = self.rolling_volatility().max(self.min_volatility);
+        let risk_budget_usd = self.account_equity_usd * self.risk_budget_pct;
+        let target_notional = (risk_budget_usd / volatility).min(self.max_notional_per_trade);
+        let ratio = target_notional / base_notional;
+        let ratio_f = ratio.to_f64().unwrap_or(1.0).clamp(0.25, 3.0);
+        let scaled = self.qty * Decimal::from_f64(ratio_f).unwrap_or(Decimal::ONE);
+        (scaled * Decimal::from(1_000_000)).round() / Decimal::from(1_000_000)
+    }
+
+    fn rolling_volatility(&self) -> Decimal {
+        if self.close_history.len() < 2 {
+            return self.min_volatility;
+        }
+        let mut returns = Vec::with_capacity(self.close_history.len() - 1);
+        for pair in self.close_history.windows(2) {
+            let prev = pair[0].to_f64().unwrap_or(0.0);
+            let next = pair[1].to_f64().unwrap_or(0.0);
+            if prev > 0.0 && next > 0.0 {
+                returns.push((next / prev) - 1.0);
+            }
+        }
+        if returns.len() < 2 {
+            return self.min_volatility;
+        }
+        let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+        let variance =
+            returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
+        let stddev = variance.sqrt();
+        Decimal::from_f64(stddev).unwrap_or(self.min_volatility)
     }
 }
 

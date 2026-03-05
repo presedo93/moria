@@ -1,0 +1,15 @@
+[package]
+name = "moria-backtest"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+moria-common = { path = "../common" }
+rust_decimal.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

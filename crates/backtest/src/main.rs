@@ -1,0 +1,310 @@
+use anyhow::{Context, Result, bail};
+use chrono::Utc;
+use moria_common::Config;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::{FromPrimitive, Signed, ToPrimitive};
+use serde_json::json;
+use sqlx::postgres::PgPoolOptions;
+use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use uuid::Uuid;
+
+#[derive(Default)]
+struct PortfolioState {
+    qty: Decimal,
+    avg_entry: Decimal,
+    realized_pnl: Decimal,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let config = Config::from_env();
+    config.validate_for_service("strategy")?;
+    moria_common::telemetry::init_tracing("backtest")?;
+
+    let csv_path = std::env::var("BACKTEST_CSV_PATH")
+        .context("BACKTEST_CSV_PATH is required (CSV with a 'close' column)")?;
+    let fee_bps = std::env::var("BACKTEST_FEE_BPS")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(5.0);
+    let closes = load_closes(&csv_path)?;
+    if closes.len() < config.sma_long_period + 2 {
+        bail!("not enough rows in backtest CSV for configured SMA_LONG_PERIOD");
+    }
+
+    let (metrics, params) = run_backtest(&config, &closes, fee_bps)?;
+    println!(
+        "backtest_complete strategy=sma_crossover symbol={} total_return_pct={} max_drawdown_pct={} sharpe={} trades={} win_rate={}",
+        config.trading_pair,
+        metrics.total_return_pct,
+        metrics.max_drawdown_pct,
+        metrics.sharpe_ratio,
+        metrics.trades_count,
+        metrics.win_rate
+    );
+
+    if !config.database_url.trim().is_empty() {
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&config.database_url)
+            .await
+            .context("failed to connect to postgres for leaderboard write")?;
+        sqlx::query(
+            "INSERT INTO backtest_runs
+                (id, strategy, symbol, params, total_return_pct, max_drawdown_pct, sharpe_ratio, trades_count, win_rate, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(Uuid::new_v4())
+        .bind("sma_crossover")
+        .bind(&config.trading_pair)
+        .bind(params)
+        .bind(metrics.total_return_pct)
+        .bind(metrics.max_drawdown_pct)
+        .bind(metrics.sharpe_ratio)
+        .bind(metrics.trades_count)
+        .bind(metrics.win_rate)
+        .bind(Utc::now())
+        .execute(&pool)
+        .await?;
+    }
+
+    moria_common::telemetry::shutdown_tracing();
+    Ok(())
+}
+
+struct BacktestMetrics {
+    total_return_pct: Decimal,
+    max_drawdown_pct: Decimal,
+    sharpe_ratio: Decimal,
+    trades_count: i32,
+    win_rate: Decimal,
+}
+
+fn run_backtest(config: &Config, closes: &[Decimal], fee_bps: f64) -> Result<(BacktestMetrics, serde_json::Value)> {
+    let mut prices = VecDeque::with_capacity(config.sma_long_period + 1);
+    let mut returns_window: Vec<Decimal> = Vec::with_capacity(config.volatility_window + 1);
+    let mut prev_short_above_long: Option<bool> = None;
+    let mut state = PortfolioState::default();
+    let mut equity_curve = Vec::with_capacity(closes.len());
+    let mut closed_trade_pnls: Vec<Decimal> = Vec::new();
+
+    for close in closes {
+        prices.push_back(*close);
+        if prices.len() > config.sma_long_period {
+            prices.pop_front();
+        }
+        returns_window.push(*close);
+        if returns_window.len() > config.volatility_window {
+            let remove_count = returns_window.len() - config.volatility_window;
+            returns_window.drain(0..remove_count);
+        }
+
+        if prices.len() >= config.sma_long_period {
+            let short = sma(&prices, config.sma_short_period);
+            let long = sma(&prices, config.sma_long_period);
+            let short_above = short > long;
+            let signal = match prev_short_above_long {
+                Some(prev) if prev != short_above => {
+                    if short_above { Some("Buy") } else { Some("Sell") }
+                }
+                _ => None,
+            };
+            prev_short_above_long = Some(short_above);
+
+            if let Some(side) = signal {
+                let qty = sized_qty(config, *close, &returns_window);
+                let trade_realized = apply_fill(&mut state, side, qty, *close);
+                let fee = *close * qty * Decimal::from_f64(fee_bps / 10_000.0).unwrap_or(Decimal::ZERO);
+                state.realized_pnl -= fee;
+                if trade_realized != Decimal::ZERO {
+                    closed_trade_pnls.push(trade_realized - fee);
+                }
+            }
+        }
+
+        let unrealized = if state.qty == Decimal::ZERO || state.avg_entry == Decimal::ZERO {
+            Decimal::ZERO
+        } else if state.qty > Decimal::ZERO {
+            (*close - state.avg_entry) * state.qty
+        } else {
+            (state.avg_entry - *close) * state.qty.abs()
+        };
+        equity_curve.push(config.account_equity_usd + state.realized_pnl + unrealized);
+    }
+
+    let first = *equity_curve.first().unwrap_or(&config.account_equity_usd);
+    let last = *equity_curve.last().unwrap_or(&config.account_equity_usd);
+    let total_return_pct = if first > Decimal::ZERO {
+        ((last - first) / first) * Decimal::from(100)
+    } else {
+        Decimal::ZERO
+    };
+    let max_drawdown_pct = max_drawdown_pct(&equity_curve);
+    let sharpe_ratio = sharpe_ratio(&equity_curve);
+    let trades_count = closed_trade_pnls.len() as i32;
+    let wins = closed_trade_pnls.iter().filter(|p| **p > Decimal::ZERO).count() as i32;
+    let win_rate = if trades_count > 0 {
+        Decimal::from(wins) / Decimal::from(trades_count)
+    } else {
+        Decimal::ZERO
+    };
+
+    let params = json!({
+        "short_period": config.sma_short_period,
+        "long_period": config.sma_long_period,
+        "order_qty": config.order_qty.to_string(),
+        "account_equity_usd": config.account_equity_usd.to_string(),
+        "risk_budget_pct": config.risk_budget_pct.to_string(),
+        "max_notional_per_trade": config.max_notional_per_trade.to_string(),
+        "volatility_window": config.volatility_window,
+        "fee_bps": fee_bps
+    });
+
+    Ok((BacktestMetrics {
+        total_return_pct,
+        max_drawdown_pct,
+        sharpe_ratio,
+        trades_count,
+        win_rate,
+    }, params))
+}
+
+fn sized_qty(config: &Config, price: Decimal, closes: &[Decimal]) -> Decimal {
+    if price <= Decimal::ZERO {
+        return config.order_qty;
+    }
+    let vol = rolling_volatility(closes).max(config.min_volatility);
+    let risk_budget_usd = config.account_equity_usd * config.risk_budget_pct;
+    let target_notional = (risk_budget_usd / vol).min(config.max_notional_per_trade);
+    (target_notional / price).max(Decimal::ZERO)
+}
+
+fn apply_fill(state: &mut PortfolioState, side: &str, qty: Decimal, price: Decimal) -> Decimal {
+    let signed_delta = if side == "Buy" { qty } else { -qty };
+    let current_qty = state.qty;
+    let current_avg = state.avg_entry;
+    let new_qty = current_qty + signed_delta;
+
+    let mut realized = Decimal::ZERO;
+    let is_reducing = (side == "Buy" && current_qty < Decimal::ZERO)
+        || (side == "Sell" && current_qty > Decimal::ZERO);
+    if is_reducing && current_qty != Decimal::ZERO && current_avg != Decimal::ZERO {
+        let qty_closed = qty.min(current_qty.abs());
+        realized = if current_qty > Decimal::ZERO {
+            (price - current_avg) * qty_closed
+        } else {
+            (current_avg - price) * qty_closed
+        };
+        state.realized_pnl += realized;
+    }
+
+    state.avg_entry = if new_qty == Decimal::ZERO {
+        Decimal::ZERO
+    } else if current_qty == Decimal::ZERO || current_qty.signum() == signed_delta.signum() {
+        ((current_avg * current_qty.abs()) + (price * qty.abs())) / new_qty.abs()
+    } else if current_qty.signum() == new_qty.signum() {
+        current_avg
+    } else {
+        price
+    };
+    state.qty = new_qty;
+    realized
+}
+
+fn sma(prices: &VecDeque<Decimal>, period: usize) -> Decimal {
+    let len = prices.len();
+    let sum: Decimal = prices.iter().skip(len - period).copied().sum();
+    sum / Decimal::from(period)
+}
+
+fn rolling_volatility(closes: &[Decimal]) -> Decimal {
+    if closes.len() < 2 {
+        return Decimal::from_str_exact("0.001").unwrap_or(Decimal::ONE / Decimal::from(1000));
+    }
+    let mut returns = Vec::with_capacity(closes.len() - 1);
+    for pair in closes.windows(2) {
+        let prev = pair[0].to_f64().unwrap_or(0.0);
+        let next = pair[1].to_f64().unwrap_or(0.0);
+        if prev > 0.0 && next > 0.0 {
+            returns.push((next / prev) - 1.0);
+        }
+    }
+    if returns.len() < 2 {
+        return Decimal::from_f64(0.001).unwrap_or(Decimal::ONE / Decimal::from(1000));
+    }
+    let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+    let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
+    Decimal::from_f64(variance.sqrt()).unwrap_or(Decimal::from_f64(0.001).unwrap_or(Decimal::ZERO))
+}
+
+fn max_drawdown_pct(equity: &[Decimal]) -> Decimal {
+    if equity.is_empty() {
+        return Decimal::ZERO;
+    }
+    let mut peak = equity[0];
+    let mut max_dd = Decimal::ZERO;
+    for value in equity {
+        if *value > peak {
+            peak = *value;
+        }
+        if peak > Decimal::ZERO {
+            let dd = (peak - *value) / peak;
+            if dd > max_dd {
+                max_dd = dd;
+            }
+        }
+    }
+    max_dd * Decimal::from(100)
+}
+
+fn sharpe_ratio(equity: &[Decimal]) -> Decimal {
+    if equity.len() < 3 {
+        return Decimal::ZERO;
+    }
+    let mut rets = Vec::with_capacity(equity.len() - 1);
+    for pair in equity.windows(2) {
+        let prev = pair[0].to_f64().unwrap_or(0.0);
+        let next = pair[1].to_f64().unwrap_or(0.0);
+        if prev > 0.0 && next > 0.0 {
+            rets.push((next / prev) - 1.0);
+        }
+    }
+    if rets.len() < 2 {
+        return Decimal::ZERO;
+    }
+    let mean = rets.iter().sum::<f64>() / rets.len() as f64;
+    let variance = rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (rets.len() - 1) as f64;
+    let stddev = variance.sqrt();
+    if stddev <= f64::EPSILON {
+        return Decimal::ZERO;
+    }
+    Decimal::from_f64((mean / stddev) * (252.0_f64).sqrt()).unwrap_or(Decimal::ZERO)
+}
+
+fn load_closes(path: &str) -> Result<Vec<Decimal>> {
+    let file = File::open(path).with_context(|| format!("failed to open {path}"))?;
+    let mut lines = BufReader::new(file).lines();
+    let header = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("CSV is empty"))??;
+    let columns: Vec<&str> = header.split(',').collect();
+    let close_idx = columns
+        .iter()
+        .position(|c| c.trim().eq_ignore_ascii_case("close"))
+        .ok_or_else(|| anyhow::anyhow!("CSV must contain a 'close' column"))?;
+
+    let mut closes = Vec::new();
+    for line in lines {
+        let line = line?;
+        let parts: Vec<&str> = line.split(',').collect();
+        if let Some(raw) = parts.get(close_idx) {
+            if let Ok(price) = Decimal::from_str_exact(raw.trim()) {
+                closes.push(price);
+            }
+        }
+    }
+
+    Ok(closes)
+}

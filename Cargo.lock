@@ -1438,6 +1438,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "moria-backtest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "moria-common",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "moria-common"
 version = "0.1.0"
 dependencies = [

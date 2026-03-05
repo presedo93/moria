@@ -17,6 +17,11 @@ pub struct Config {
     pub sma_short_period: usize,
     pub sma_long_period: usize,
     pub order_qty: Decimal,
+    pub account_equity_usd: Decimal,
+    pub risk_budget_pct: Decimal,
+    pub max_notional_per_trade: Decimal,
+    pub volatility_window: usize,
+    pub min_volatility: Decimal,
     pub signal_queue_capacity: usize,
     pub signal_max_inflight: usize,
     pub max_position_size: Decimal,
@@ -62,6 +67,26 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
             order_qty: env::var("ORDER_QTY")
+                .ok()
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from_str("0.001").expect("valid decimal")),
+            account_equity_usd: env::var("ACCOUNT_EQUITY_USD")
+                .ok()
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from(10_000)),
+            risk_budget_pct: env::var("RISK_BUDGET_PCT")
+                .ok()
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from_str("0.01").expect("valid decimal")),
+            max_notional_per_trade: env::var("MAX_NOTIONAL_PER_TRADE")
+                .ok()
+                .and_then(|v| Decimal::from_str(&v).ok())
+                .unwrap_or_else(|| Decimal::from(2_500)),
+            volatility_window: env::var("VOLATILITY_WINDOW")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20),
+            min_volatility: env::var("MIN_VOLATILITY")
                 .ok()
                 .and_then(|v| Decimal::from_str(&v).ok())
                 .unwrap_or_else(|| Decimal::from_str("0.001").expect("valid decimal")),
@@ -125,6 +150,21 @@ impl Config {
         }
         if self.order_qty <= Decimal::ZERO {
             bail!("ORDER_QTY must be > 0");
+        }
+        if self.account_equity_usd <= Decimal::ZERO {
+            bail!("ACCOUNT_EQUITY_USD must be > 0");
+        }
+        if self.risk_budget_pct <= Decimal::ZERO || self.risk_budget_pct >= Decimal::ONE {
+            bail!("RISK_BUDGET_PCT must be in (0, 1)");
+        }
+        if self.max_notional_per_trade <= Decimal::ZERO {
+            bail!("MAX_NOTIONAL_PER_TRADE must be > 0");
+        }
+        if self.volatility_window < 2 {
+            bail!("VOLATILITY_WINDOW must be >= 2");
+        }
+        if self.min_volatility <= Decimal::ZERO {
+            bail!("MIN_VOLATILITY must be > 0");
         }
         if self.max_position_size <= Decimal::ZERO {
             bail!("MAX_POSITION_SIZE must be > 0");

@@ -42,6 +42,11 @@ async fn main() -> Result<()> {
         config.sma_long_period,
         config.signal_queue_capacity,
         config.signal_max_inflight,
+        config.account_equity_usd,
+        config.risk_budget_pct,
+        config.max_notional_per_trade,
+        config.volatility_window,
+        config.min_volatility,
         config.internal_service_token,
     );
 
