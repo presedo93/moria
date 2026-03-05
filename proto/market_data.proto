@@ -16,6 +16,7 @@ message Kline {
   string close = 6;
   string volume = 7;
   int64 timestamp = 8;
+  bool confirm = 9;
 }
 
 message Trade {

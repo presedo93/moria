@@ -37,7 +37,28 @@ async fn main() -> Result<()> {
         strategy,
         config.market_data_grpc_addr,
         config.risk_grpc_addr,
+        config.bybit_rest_url,
+        config.sma_long_period,
     );
 
-    engine.run().await
+    // Run engine with graceful shutdown on SIGTERM/SIGINT
+    tokio::select! {
+        result = engine.run() => result,
+        _ = shutdown_signal() => {
+            moria_common::telemetry::shutdown_tracing();
+            info!("Strategy service shut down gracefully");
+            Ok(())
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to register SIGTERM handler");
+
+    tokio::select! {
+        _ = ctrl_c => info!("strategy: received SIGINT, shutting down"),
+        _ = sigterm.recv() => info!("strategy: received SIGTERM, shutting down"),
+    }
 }

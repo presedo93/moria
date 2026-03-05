@@ -6,7 +6,7 @@ use moria_proto::market_data::{
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct MarketDataServer {
     kline_tx: broadcast::Sender<Kline>,
@@ -67,8 +67,9 @@ impl MarketDataService for MarketDataServer {
             }
             Err(_) => {
                 counter!("market_data_stream_lagged_total", "stream" => "klines").increment(1);
+                warn!("Kline subscriber lagged — consumer is too slow, data was dropped");
                 None
-            } // lagged receiver, skip
+            }
             _ => {
                 counter!("market_data_filtered_out_total", "stream" => "klines").increment(1);
                 None
@@ -95,6 +96,7 @@ impl MarketDataService for MarketDataServer {
             }
             Err(_) => {
                 counter!("market_data_stream_lagged_total", "stream" => "trades").increment(1);
+                warn!("Trade subscriber lagged — consumer is too slow, data was dropped");
                 None
             }
             _ => {
@@ -123,6 +125,7 @@ impl MarketDataService for MarketDataServer {
             }
             Err(_) => {
                 counter!("market_data_stream_lagged_total", "stream" => "orderbook").increment(1);
+                warn!("Orderbook subscriber lagged — consumer is too slow, data was dropped");
                 None
             }
             _ => {

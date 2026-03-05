@@ -24,6 +24,8 @@ pub enum RiskError {
         drawdown: Decimal,
         max: Decimal,
     },
+    #[error("invalid side '{side}', expected Buy or Sell")]
+    InvalidSide { side: String },
 }
 
 pub struct RiskValidator {
@@ -61,7 +63,7 @@ impl RiskValidator {
         let signed_requested = match side {
             "Buy" => requested_qty,
             "Sell" => -requested_qty,
-            _ => requested_qty,
+            _ => return Err(RiskError::InvalidSide { side: side.to_string() }),
         };
 
         let new_position = current_position + signed_requested;

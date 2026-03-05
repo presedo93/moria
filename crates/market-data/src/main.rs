@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         trade_tx.clone(),
         orderbook_tx.clone(),
     );
-    tokio::spawn(async move { ws.run().await });
+    let ws_handle = tokio::spawn(async move { ws.run().await });
 
     // Start gRPC server
     let grpc_server = server::MarketDataServer::new(kline_tx, trade_tx, orderbook_tx);
@@ -49,8 +49,22 @@ async fn main() -> Result<()> {
         .add_service(health_service)
         .add_service(reflection_service)
         .add_service(grpc_server.into_service())
-        .serve(addr)
+        .serve_with_shutdown(addr, shutdown_signal("market-data"))
         .await?;
 
+    ws_handle.abort();
+    moria_common::telemetry::shutdown_tracing();
+    info!("Market-data service shut down gracefully");
     Ok(())
+}
+
+async fn shutdown_signal(service: &str) {
+    let ctrl_c = tokio::signal::ctrl_c();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to register SIGTERM handler");
+
+    tokio::select! {
+        _ = ctrl_c => info!("{service}: received SIGINT, shutting down"),
+        _ = sigterm.recv() => info!("{service}: received SIGTERM, shutting down"),
+    }
 }

@@ -164,6 +164,7 @@ impl BybitWs {
                         close: k.close,
                         volume: k.volume,
                         timestamp: k.start,
+                        confirm: k.confirm,
                     };
                     if self.kline_tx.send(kline).is_err() {
                         counter!("market_data_broadcast_dropped_total", "stream" => "klines").increment(1);
@@ -254,6 +255,7 @@ struct KlineData {
     low: String,
     close: String,
     volume: String,
+    confirm: bool,
 }
 
 #[derive(Deserialize)]

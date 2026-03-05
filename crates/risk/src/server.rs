@@ -1,5 +1,6 @@
-use crate::{db, validator::RiskValidator};
+use crate::{circuit_breaker::CircuitBreaker, db, validator::RiskValidator};
 use metrics::{counter, histogram};
+use moria_common::OrderStatus;
 use moria_proto::{
     order::{OrderRequest, order_service_client::OrderServiceClient},
     risk::{
@@ -10,6 +11,7 @@ use moria_proto::{
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status, transport::Channel};
 use tracing::{info, warn};
@@ -19,6 +21,7 @@ pub struct RiskServer {
     pool: PgPool,
     validator: RiskValidator,
     order_client: OrderServiceClient<Channel>,
+    order_circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl RiskServer {
@@ -31,6 +34,8 @@ impl RiskServer {
             pool,
             validator,
             order_client,
+            // Open circuit after 5 consecutive failures, recover after 30s
+            order_circuit_breaker: Arc::new(CircuitBreaker::new(5, Duration::from_secs(30))),
         }
     }
 
@@ -88,34 +93,75 @@ impl RiskService for RiskServer {
         let price = parse_decimal("price", &order.price)?;
         let qty = parse_decimal("qty", &order.qty)?;
 
-        // Fetch current risk state
-        let current_position = db::get_position_qty(&self.pool, &order.symbol)
+        // Fetch current risk state under a transaction lock (prevents TOCTOU races)
+        let (mut risk_tx, risk_state) = db::begin_risk_check(&self.pool, &order.symbol)
             .await
             .map_err(|e| Status::internal(format!("db error: {e}")))?;
 
-        let daily_pnl = db::get_daily_realized_pnl(&self.pool, &order.symbol)
-            .await
-            .map_err(|e| Status::internal(format!("db error: {e}")))?;
-
-        let portfolio_notional = db::get_portfolio_notional(&self.pool)
-            .await
-            .map_err(|e| Status::internal(format!("db error: {e}")))?;
-
-        let daily_peak_pnl = db::get_daily_peak_pnl(&self.pool)
-            .await
-            .map_err(|e| Status::internal(format!("db error: {e}")))?;
-
-        // Validate
-        let decision = match self
-            .validator
-            .validate(current_position, &order.side, qty, price, daily_pnl, portfolio_notional, daily_peak_pnl)
+        // Compute unrealized PnL from current position and market price
+        let unrealized_pnl = if risk_state.current_position != Decimal::ZERO
+            && risk_state.avg_entry_price != Decimal::ZERO
         {
+            // For long positions: (market_price - entry) * qty
+            // For short positions: (entry - market_price) * |qty|
+            if risk_state.current_position > Decimal::ZERO {
+                (price - risk_state.avg_entry_price) * risk_state.current_position
+            } else {
+                (risk_state.avg_entry_price - price) * risk_state.current_position.abs()
+            }
+        } else {
+            Decimal::ZERO
+        };
+
+        let total_daily_pnl = risk_state.daily_realized_pnl + unrealized_pnl;
+
+        // Validate against the locked snapshot (using total PnL including unrealized)
+        let decision = match self.validator.validate(
+            risk_state.current_position,
+            &order.side,
+            qty,
+            price,
+            total_daily_pnl,
+            risk_state.portfolio_notional,
+            risk_state.daily_peak_pnl,
+        ) {
             Ok(()) => {
-                // Update daily peak high-water mark if PnL improved
-                if daily_pnl > daily_peak_pnl {
-                    if let Err(e) = db::update_daily_peak_pnl(&self.pool, daily_pnl).await {
+                // Update daily peak high-water mark if PnL improved (atomic conditional update)
+                if total_daily_pnl > risk_state.daily_peak_pnl {
+                    if let Err(e) = db::update_daily_peak_pnl_in_tx(&mut risk_tx, total_daily_pnl).await {
                         warn!(?e, "Failed to update daily peak PnL");
                     }
+                }
+
+                // Check circuit breaker before forwarding to order service
+                if !self.order_circuit_breaker.allow_request() {
+                    counter!("risk_rejected_total", "reason" => "circuit_breaker_open").increment(1);
+                    let reason = "order service circuit breaker is open".to_string();
+                    warn!(signal_id, "Order rejected — circuit breaker open");
+
+                    db::persist_signal_and_trade_in_tx(
+                        &mut risk_tx,
+                        signal_uuid,
+                        &order.symbol,
+                        &order.side,
+                        &order.order_type,
+                        price,
+                        qty,
+                        false,
+                        Some(&reason),
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| Status::internal(format!("db error: {e}")))?;
+
+                    risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
+
+                    return Ok(Response::new(RiskDecision {
+                        approved: false,
+                        reason,
+                        signal_id,
+                    }));
                 }
 
                 // Forward to order service
@@ -135,13 +181,14 @@ impl RiskService for RiskServer {
                 .await
                 {
                     Ok(Ok(resp)) => {
+                        self.order_circuit_breaker.record_success();
                         let order_resp = resp.into_inner();
-                        let is_approved =
-                            order_resp.status == "Submitted" || order_resp.status == "Filled";
+                        let status = order_resp.status.parse::<OrderStatus>().unwrap_or(OrderStatus::Rejected);
+                        let is_approved = status.is_successful();
                         let reject_reason = (!is_approved).then_some(order_resp.message.as_str());
 
-                        db::persist_signal_and_trade(
-                            &self.pool,
+                        db::persist_signal_and_trade_in_tx(
+                            &mut risk_tx,
                             signal_uuid,
                             &order.symbol,
                             &order.side,
@@ -155,6 +202,8 @@ impl RiskService for RiskServer {
                         )
                         .await
                         .map_err(|e| Status::internal(format!("db error: {e}")))?;
+
+                        risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
 
                         if is_approved {
                             counter!("risk_approved_total").increment(1);
@@ -187,13 +236,14 @@ impl RiskService for RiskServer {
                         }
                     }
                     Ok(Err(e)) => {
+                        self.order_circuit_breaker.record_failure();
                         counter!("risk_rejected_total", "reason" => "order_service_error")
                             .increment(1);
                         let reason = format!("order service call failed: {e}");
                         warn!(?e, signal_id, "Failed to place order");
 
-                        db::persist_signal_and_trade(
-                            &self.pool,
+                        db::persist_signal_and_trade_in_tx(
+                            &mut risk_tx,
                             signal_uuid,
                             &order.symbol,
                             &order.side,
@@ -207,6 +257,8 @@ impl RiskService for RiskServer {
                         )
                         .await
                         .map_err(|db_err| Status::internal(format!("db error: {db_err}")))?;
+
+                        risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
 
                         RiskDecision {
                             approved: false,
@@ -215,13 +267,15 @@ impl RiskService for RiskServer {
                         }
                     }
                     Err(_) => {
+                        self.order_circuit_breaker.record_failure();
                         counter!("risk_rejected_total", "reason" => "order_service_timeout")
                             .increment(1);
-                        let reason = "order service call timed out".to_string();
-                        warn!(signal_id, "Order placement timed out");
+                        let reason = "order service call timed out (order may have been submitted)".to_string();
+                        warn!(signal_id, "Order placement timed out — order status uncertain");
 
-                        db::persist_signal_and_trade(
-                            &self.pool,
+                        // Record as uncertain rather than rejected — the order may have been submitted
+                        db::persist_signal_and_trade_in_tx(
+                            &mut risk_tx,
                             signal_uuid,
                             &order.symbol,
                             &order.side,
@@ -231,10 +285,12 @@ impl RiskService for RiskServer {
                             false,
                             Some(&reason),
                             None,
-                            None,
+                            Some("Uncertain"),
                         )
                         .await
                         .map_err(|db_err| Status::internal(format!("db error: {db_err}")))?;
+
+                        risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
 
                         RiskDecision {
                             approved: false,
@@ -252,8 +308,8 @@ impl RiskService for RiskServer {
                 let reason = e.to_string();
                 warn!(signal_id, %reason, "Order rejected");
 
-                db::persist_signal_and_trade(
-                    &self.pool,
+                db::persist_signal_and_trade_in_tx(
+                    &mut risk_tx,
                     signal_uuid,
                     &order.symbol,
                     &order.side,
@@ -267,6 +323,8 @@ impl RiskService for RiskServer {
                 )
                 .await
                 .map_err(|e| Status::internal(format!("db error: {e}")))?;
+
+                risk_tx.commit().await.map_err(|e| Status::internal(format!("db error: {e}")))?;
 
                 RiskDecision {
                     approved: false,

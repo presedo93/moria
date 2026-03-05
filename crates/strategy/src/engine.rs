@@ -20,6 +20,8 @@ pub struct StrategyEngine {
     strategy: Box<dyn Strategy>,
     market_data_addr: String,
     risk_addr: String,
+    bybit_rest_url: String,
+    warm_up_period: usize,
 }
 
 impl StrategyEngine {
@@ -30,6 +32,8 @@ impl StrategyEngine {
         strategy: Box<dyn Strategy>,
         market_data_addr: String,
         risk_addr: String,
+        bybit_rest_url: String,
+        warm_up_period: usize,
     ) -> Self {
         Self {
             symbol,
@@ -38,6 +42,8 @@ impl StrategyEngine {
             strategy,
             market_data_addr,
             risk_addr,
+            bybit_rest_url,
+            warm_up_period,
         }
     }
 
@@ -67,8 +73,57 @@ impl StrategyEngine {
         }
     }
 
+    /// Fetch historical klines from Bybit REST API to pre-fill the strategy's price window,
+    /// avoiding the cold-start blind period where no signals can be generated.
+    async fn bootstrap_historical(&mut self) -> Result<()> {
+        if self.warm_up_period == 0 {
+            return Ok(());
+        }
+
+        let url = format!(
+            "{}/v5/market/kline?category=linear&symbol={}&interval={}&limit={}",
+            self.bybit_rest_url, self.symbol, self.interval, self.warm_up_period
+        );
+
+        info!(url = %url, count = self.warm_up_period, "Bootstrapping strategy with historical klines");
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+
+        let resp: BybitKlineResponse = client.get(&url).send().await?.json().await?;
+
+        if resp.ret_code != 0 {
+            warn!(ret_code = resp.ret_code, msg = %resp.ret_msg, "Bybit kline API error during bootstrap");
+            return Ok(()); // Non-fatal: strategy will warm up naturally
+        }
+
+        // Bybit returns klines newest-first, reverse to chronological order
+        let mut klines = resp.result.list;
+        klines.reverse();
+
+        let mut count = 0;
+        for kline in &klines {
+            // Kline format: [start_time, open, high, low, close, volume, turnover]
+            if kline.len() >= 5 {
+                if let Ok(close) = Decimal::from_str(&kline[4]) {
+                    self.strategy.push(close);
+                    count += 1;
+                }
+            }
+        }
+
+        info!(count, "Strategy bootstrapped with historical prices");
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self), fields(symbol = %self.symbol))]
     async fn run_once(&mut self) -> Result<()> {
+        // Bootstrap strategy with historical data to avoid cold-start blind period
+        if let Err(e) = self.bootstrap_historical().await {
+            warn!(?e, "Failed to bootstrap historical klines (will warm up naturally)");
+        }
+
         let market_channel = Channel::from_shared(format!("http://{}", self.market_data_addr))?
             .connect_timeout(Duration::from_secs(5))
             .connect()
@@ -106,6 +161,13 @@ impl StrategyEngine {
                 }
             };
 
+            // Only evaluate strategy on confirmed (closed) candles to avoid
+            // false signals from mid-candle price spikes
+            if !kline.confirm {
+                tracing::trace!(close = %kline.close, "Skipping unconfirmed kline");
+                continue;
+            }
+
             let close = match Decimal::from_str(&kline.close) {
                 Ok(d) => d,
                 Err(e) => {
@@ -122,12 +184,18 @@ impl StrategyEngine {
                 Signal::Buy => {
                     counter!("strategy_signals_total", "side" => "Buy").increment(1);
                     info!(%close, "BUY signal detected");
-                    self.send_signal("Buy", close, risk_client.clone()).await;
+                    Self::spawn_signal(
+                        "Buy", close, risk_client.clone(),
+                        self.symbol.clone(), self.qty,
+                    );
                 }
                 Signal::Sell => {
                     counter!("strategy_signals_total", "side" => "Sell").increment(1);
                     info!(%close, "SELL signal detected");
-                    self.send_signal("Sell", close, risk_client.clone()).await;
+                    Self::spawn_signal(
+                        "Sell", close, risk_client.clone(),
+                        self.symbol.clone(), self.qty,
+                    );
                 }
                 Signal::None => {}
             }
@@ -136,21 +204,35 @@ impl StrategyEngine {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, risk_client), fields(symbol = %self.symbol))]
+    /// Dispatch signal to risk service asynchronously so kline processing isn't blocked.
+    fn spawn_signal(
+        side: &str,
+        price: Decimal,
+        risk_client: RiskServiceClient<Channel>,
+        symbol: String,
+        qty: Decimal,
+    ) {
+        let side = side.to_string();
+        tokio::spawn(async move {
+            Self::send_signal(&side, price, risk_client, &symbol, qty).await;
+        });
+    }
+
     async fn send_signal(
-        &self,
         side: &str,
         price: Decimal,
         mut risk_client: RiskServiceClient<Channel>,
+        symbol: &str,
+        qty: Decimal,
     ) {
         let signal_id = uuid::Uuid::new_v4().to_string();
         let request = OrderRequest {
             signal_id: signal_id.clone(),
-            symbol: self.symbol.clone(),
+            symbol: symbol.to_string(),
             side: side.to_string(),
             order_type: "Market".to_string(),
             price: price.to_string(),
-            qty: self.qty.to_string(),
+            qty: qty.to_string(),
         };
 
         match tokio::time::timeout(
@@ -179,4 +261,20 @@ impl StrategyEngine {
             }
         }
     }
+}
+
+// --- Bybit REST API types for historical kline bootstrap ---
+
+#[derive(serde::Deserialize)]
+struct BybitKlineResponse {
+    #[serde(rename = "retCode")]
+    ret_code: i32,
+    #[serde(rename = "retMsg")]
+    ret_msg: String,
+    result: BybitKlineResult,
+}
+
+#[derive(serde::Deserialize)]
+struct BybitKlineResult {
+    list: Vec<Vec<String>>,
 }
