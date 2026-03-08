@@ -50,6 +50,7 @@ async fn main() -> Result<()> {
             .connect(&config.database_url)
             .await
             .context("failed to connect to postgres for leaderboard write")?;
+        moria_common::migrate::run_migrations(&pool).await?;
         sqlx::query(
             "INSERT INTO backtest_runs
                 (id, strategy, symbol, params, total_return_pct, max_drawdown_pct, sharpe_ratio, trades_count, win_rate, created_at)

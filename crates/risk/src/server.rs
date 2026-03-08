@@ -314,7 +314,7 @@ mod integration_tests {
     #[sqlx::test]
     #[ignore = "requires DATABASE_URL to a Postgres server for sqlx::test"]
     async fn filled_order_persists_signal_trade_and_updates_position(pool: PgPool) {
-        db::run_migrations(&pool)
+        moria_common::migrate::run_migrations(&pool)
             .await
             .expect("migrations should apply");
 
@@ -407,7 +407,7 @@ mod integration_tests {
     #[sqlx::test]
     #[ignore = "requires DATABASE_URL to a Postgres server for sqlx::test"]
     async fn rejected_execution_returns_not_approved_and_persists_reason(pool: PgPool) {
-        db::run_migrations(&pool)
+        moria_common::migrate::run_migrations(&pool)
             .await
             .expect("migrations should apply");
 
@@ -470,7 +470,7 @@ mod integration_tests {
     #[sqlx::test]
     #[ignore = "requires DATABASE_URL to a Postgres server for sqlx::test"]
     async fn duplicate_signal_id_returns_existing_decision_without_duplicate_trade(pool: PgPool) {
-        db::run_migrations(&pool)
+        moria_common::migrate::run_migrations(&pool)
             .await
             .expect("migrations should apply");
 

@@ -34,6 +34,8 @@ async fn main() -> Result<()> {
         .await
         .context("failed to connect to postgres")?;
 
+    moria_common::migrate::run_migrations(&pool).await?;
+
     let order_channel = Channel::from_shared(format!("http://{}", config.order_grpc_addr))
         .context("invalid order service address")?
         .connect_timeout(Duration::from_secs(5))

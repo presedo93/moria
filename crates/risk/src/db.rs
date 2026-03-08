@@ -111,25 +111,6 @@ fn symbol_lock_key(symbol: &str) -> i64 {
     hash
 }
 
-pub async fn run_migrations(pool: &PgPool) -> Result<()> {
-    let migration_001 = include_str!("../../../migrations/001_initial.sql");
-    sqlx::raw_sql(migration_001).execute(pool).await?;
-    let migration_002 = include_str!("../../../migrations/002_daily_equity.sql");
-    sqlx::raw_sql(migration_002).execute(pool).await?;
-    let migration_003 = include_str!("../../../migrations/003_realized_pnl_and_indexes.sql");
-    sqlx::raw_sql(migration_003).execute(pool).await?;
-    let migration_004 = include_str!("../../../migrations/004_order_intents.sql");
-    sqlx::raw_sql(migration_004).execute(pool).await?;
-    let migration_005 = include_str!("../../../migrations/005_trade_reconciliation_index.sql");
-    sqlx::raw_sql(migration_005).execute(pool).await?;
-    let migration_006 = include_str!("../../../migrations/006_domain_events.sql");
-    sqlx::raw_sql(migration_006).execute(pool).await?;
-    let migration_007 = include_str!("../../../migrations/007_backtest_leaderboard.sql");
-    sqlx::raw_sql(migration_007).execute(pool).await?;
-    tracing::info!("Database migrations applied");
-    Ok(())
-}
-
 pub use moria_common::db::{append_domain_event, append_domain_event_in_tx};
 
 #[allow(clippy::too_many_arguments)]

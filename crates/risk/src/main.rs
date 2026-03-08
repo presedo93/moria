@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     .await
     .context("Failed to connect to PostgreSQL")?;
 
-    db::run_migrations(&pool).await?;
+    moria_common::migrate::run_migrations(&pool).await?;
 
     // Connect to order service with retry
     let order_endpoint = Channel::from_shared(format!("http://{}", config.order_grpc_addr))
