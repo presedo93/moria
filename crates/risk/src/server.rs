@@ -249,7 +249,7 @@ mod integration_tests {
     use super::*;
     use crate::db;
     use moria_proto::order::{
-        OrderRequest, OrderResponse,
+        OrderRequest, OrderResponse, OrderStatusRequest, OrderStatusResponse,
         order_service_server::{OrderService, OrderServiceServer},
     };
     use rust_decimal::Decimal;
@@ -275,6 +275,17 @@ mod integration_tests {
             let req = request.into_inner();
             Ok(Response::new(OrderResponse {
                 order_id: format!("mock-{}", req.signal_id),
+                status: self.status.to_string(),
+                message: self.message.to_string(),
+            }))
+        }
+
+        async fn get_order_status(
+            &self,
+            _request: Request<OrderStatusRequest>,
+        ) -> Result<Response<OrderStatusResponse>, Status> {
+            Ok(Response::new(OrderStatusResponse {
+                order_id: "mock-order-status".to_string(),
                 status: self.status.to_string(),
                 message: self.message.to_string(),
             }))

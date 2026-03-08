@@ -6,6 +6,8 @@ pub struct SmaCrossover {
     short_period: usize,
     long_period: usize,
     prices: VecDeque<Decimal>,
+    short_sum: Decimal,
+    long_sum: Decimal,
     prev_short_above_long: Option<bool>,
 }
 
@@ -19,14 +21,26 @@ impl SmaCrossover {
             short_period,
             long_period,
             prices: VecDeque::with_capacity(long_period + 1),
+            short_sum: Decimal::ZERO,
+            long_sum: Decimal::ZERO,
             prev_short_above_long: None,
         }
     }
 
     fn push_price(&mut self, close: Decimal) -> Signal {
         self.prices.push_back(close);
+        self.short_sum += close;
+        self.long_sum += close;
+
+        if self.prices.len() > self.short_period {
+            let exited_short_idx = self.prices.len() - self.short_period - 1;
+            self.short_sum -= self.prices[exited_short_idx];
+        }
+
         if self.prices.len() > self.long_period {
-            self.prices.pop_front();
+            if let Some(expired) = self.prices.pop_front() {
+                self.long_sum -= expired;
+            }
         }
 
         // Need at least long_period prices to compute both SMAs
@@ -34,8 +48,8 @@ impl SmaCrossover {
             return Signal::None;
         }
 
-        let short_sma = self.compute_sma(self.short_period);
-        let long_sma = self.compute_sma(self.long_period);
+        let short_sma = self.short_sum / Decimal::from(self.short_period);
+        let long_sma = self.long_sum / Decimal::from(self.long_period);
         let short_above = short_sma > long_sma;
 
         let signal = match self.prev_short_above_long {
@@ -54,9 +68,15 @@ impl SmaCrossover {
     }
 
     fn compute_sma(&self, period: usize) -> Decimal {
-        let len = self.prices.len();
-        let sum: Decimal = self.prices.iter().skip(len - period).copied().sum();
-        sum / Decimal::from(period)
+        match period {
+            p if p == self.short_period => self.short_sum / Decimal::from(period),
+            p if p == self.long_period => self.long_sum / Decimal::from(period),
+            _ => {
+                let len = self.prices.len();
+                let sum: Decimal = self.prices.iter().skip(len - period).copied().sum();
+                sum / Decimal::from(period)
+            }
+        }
     }
 
     #[cfg(test)]

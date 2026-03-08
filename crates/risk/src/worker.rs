@@ -2,22 +2,28 @@ use crate::db;
 use anyhow::Result;
 use metrics::counter;
 use moria_proto::order::order_service_client::OrderServiceClient;
-use sqlx::PgPool;
+use sqlx::{PgPool, postgres::PgListener};
 use std::time::Duration;
 use tonic::transport::Channel;
 use serde_json::json;
 use tracing::{info, warn};
 
-const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_ATTEMPTS: i32 = 8;
+const MAX_IDLE_WAIT: Duration = Duration::from_secs(300);
 
 pub fn spawn_order_execution_worker(
     pool: PgPool,
+    database_url: String,
     order_client: OrderServiceClient<Channel>,
     internal_service_token: Option<String>,
 ) {
     tokio::spawn(async move {
-        if let Err(e) = run_order_execution_worker(pool, order_client, internal_service_token).await {
+        if let Err(e) = run_order_execution_worker(
+            pool,
+            database_url,
+            order_client,
+            internal_service_token,
+        ).await {
             warn!(?e, "Order execution worker exited");
         }
     });
@@ -25,14 +31,16 @@ pub fn spawn_order_execution_worker(
 
 async fn run_order_execution_worker(
     pool: PgPool,
+    database_url: String,
     mut order_client: OrderServiceClient<Channel>,
     internal_service_token: Option<String>,
 ) -> Result<()> {
     info!("Order execution worker started");
+    let mut listener = connect_listener(&database_url).await?;
 
     loop {
         let Some(intent) = db::claim_pending_order_intent(&pool).await? else {
-            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+            wait_for_work(&pool, &mut listener, &database_url).await?;
             continue;
         };
 
@@ -125,6 +133,33 @@ async fn run_order_execution_worker(
                 )
                 .await?;
             }
+        }
+    }
+}
+
+async fn connect_listener(database_url: &str) -> Result<PgListener> {
+    let mut listener = PgListener::connect(database_url).await?;
+    listener.listen(db::ORDER_INTENTS_NOTIFY_CHANNEL).await?;
+    Ok(listener)
+}
+
+async fn wait_for_work(
+    pool: &PgPool,
+    listener: &mut PgListener,
+    database_url: &str,
+) -> Result<()> {
+    let wait_for = db::next_order_intent_due_in(pool)
+        .await?
+        .unwrap_or(MAX_IDLE_WAIT)
+        .min(MAX_IDLE_WAIT);
+
+    let notified = tokio::time::timeout(wait_for, listener.recv()).await;
+    match notified {
+        Ok(Ok(_)) | Err(_) => Ok(()),
+        Ok(Err(e)) => {
+            warn!(?e, "Order intent listener failed; reconnecting");
+            *listener = connect_listener(database_url).await?;
+            Ok(())
         }
     }
 }
