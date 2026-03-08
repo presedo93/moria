@@ -239,7 +239,6 @@ impl RiskService for RiskServer {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::db;
     use moria_proto::order::{
         OrderRequest, OrderResponse, OrderStatusRequest, OrderStatusResponse,
         order_service_server::{OrderService, OrderServiceServer},
