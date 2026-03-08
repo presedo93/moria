@@ -3,7 +3,7 @@ use chrono::Utc;
 use moria_common::Config;
 use moria_common::math::{RollingSma, RollingVolatility};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::{FromPrimitive, Signed, ToPrimitive};
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use std::fs::File;
@@ -126,13 +126,7 @@ fn run_backtest(config: &Config, closes: &[Decimal], fee_bps: f64) -> Result<(Ba
             }
         }
 
-        let unrealized = if state.qty == Decimal::ZERO || state.avg_entry == Decimal::ZERO {
-            Decimal::ZERO
-        } else if state.qty > Decimal::ZERO {
-            (*close - state.avg_entry) * state.qty
-        } else {
-            (state.avg_entry - *close) * state.qty.abs()
-        };
+        let unrealized = moria_common::position::unrealized_pnl(state.qty, state.avg_entry, *close);
         equity_curve.push(config.account_equity_usd + state.realized_pnl + unrealized);
     }
 
@@ -174,35 +168,11 @@ fn run_backtest(config: &Config, closes: &[Decimal], fee_bps: f64) -> Result<(Ba
 }
 
 fn apply_fill(state: &mut PortfolioState, side: &str, qty: Decimal, price: Decimal) -> Decimal {
-    let signed_delta = if side == "Buy" { qty } else { -qty };
-    let current_qty = state.qty;
-    let current_avg = state.avg_entry;
-    let new_qty = current_qty + signed_delta;
-
-    let mut realized = Decimal::ZERO;
-    let is_reducing = (side == "Buy" && current_qty < Decimal::ZERO)
-        || (side == "Sell" && current_qty > Decimal::ZERO);
-    if is_reducing && current_qty != Decimal::ZERO && current_avg != Decimal::ZERO {
-        let qty_closed = qty.min(current_qty.abs());
-        realized = if current_qty > Decimal::ZERO {
-            (price - current_avg) * qty_closed
-        } else {
-            (current_avg - price) * qty_closed
-        };
-        state.realized_pnl += realized;
-    }
-
-    state.avg_entry = if new_qty == Decimal::ZERO {
-        Decimal::ZERO
-    } else if current_qty == Decimal::ZERO || current_qty.signum() == signed_delta.signum() {
-        ((current_avg * current_qty.abs()) + (price * qty.abs())) / new_qty.abs()
-    } else if current_qty.signum() == new_qty.signum() {
-        current_avg
-    } else {
-        price
-    };
-    state.qty = new_qty;
-    realized
+    let result = moria_common::position::apply_fill(state.qty, state.avg_entry, side, price, qty);
+    state.qty = result.new_qty;
+    state.avg_entry = result.new_avg_entry;
+    state.realized_pnl += result.realized_pnl;
+    result.realized_pnl
 }
 
 fn max_drawdown_pct(equity: &[Decimal]) -> Decimal {

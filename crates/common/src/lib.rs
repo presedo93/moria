@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod grpc;
 pub mod math;
+pub mod position;
 pub mod retry;
 pub mod signal;
 pub mod telemetry;
