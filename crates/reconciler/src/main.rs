@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use metrics::counter;
-use moria_common::Config;
+use moria_common::config::ReconcilerConfig;
 use moria_proto::order::{OrderStatusRequest, order_service_client::OrderServiceClient};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -23,17 +23,18 @@ struct PendingTrade {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = Config::from_env();
-    config.validate_for_service("reconciler")?;
+    let config = ReconcilerConfig::from_env()?;
     moria_common::telemetry::init_tracing("reconciler")?;
-    moria_common::telemetry::init_metrics("reconciler", config.metrics_addr.as_deref())?;
+    moria_common::telemetry::init_metrics("reconciler", config.telemetry.metrics_addr.as_deref())?;
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(Duration::from_secs(5))
-        .connect(&config.database_url)
+        .connect(&config.db.database_url)
         .await
         .context("failed to connect to postgres")?;
+
+    moria_common::migrate::run_migrations(&pool).await?;
 
     let order_channel = Channel::from_shared(format!("http://{}", config.order_grpc_addr))
         .context("invalid order service address")?
@@ -49,7 +50,7 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                if let Err(e) = reconcile_once(&pool, &mut order_client, config.internal_service_token.as_deref()).await {
+                if let Err(e) = reconcile_once(&pool, &mut order_client, config.auth.internal_service_token.as_deref()).await {
                     warn!(?e, "Reconciliation tick failed");
                 }
             }

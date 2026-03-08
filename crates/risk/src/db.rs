@@ -1,7 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::Signed;
 use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
@@ -110,25 +109,6 @@ fn symbol_lock_key(symbol: &str) -> i64 {
         hash = hash.wrapping_mul(31).wrapping_add(byte as i64);
     }
     hash
-}
-
-pub async fn run_migrations(pool: &PgPool) -> Result<()> {
-    let migration_001 = include_str!("../../../migrations/001_initial.sql");
-    sqlx::raw_sql(migration_001).execute(pool).await?;
-    let migration_002 = include_str!("../../../migrations/002_daily_equity.sql");
-    sqlx::raw_sql(migration_002).execute(pool).await?;
-    let migration_003 = include_str!("../../../migrations/003_realized_pnl_and_indexes.sql");
-    sqlx::raw_sql(migration_003).execute(pool).await?;
-    let migration_004 = include_str!("../../../migrations/004_order_intents.sql");
-    sqlx::raw_sql(migration_004).execute(pool).await?;
-    let migration_005 = include_str!("../../../migrations/005_trade_reconciliation_index.sql");
-    sqlx::raw_sql(migration_005).execute(pool).await?;
-    let migration_006 = include_str!("../../../migrations/006_domain_events.sql");
-    sqlx::raw_sql(migration_006).execute(pool).await?;
-    let migration_007 = include_str!("../../../migrations/007_backtest_leaderboard.sql");
-    sqlx::raw_sql(migration_007).execute(pool).await?;
-    tracing::info!("Database migrations applied");
-    Ok(())
 }
 
 pub use moria_common::db::{append_domain_event, append_domain_event_in_tx};
@@ -535,34 +515,8 @@ async fn compute_realized_pnl(
             .await?;
 
     let (current_qty, avg_entry) = current.unwrap_or((Decimal::ZERO, Decimal::ZERO));
-
-    if current_qty == Decimal::ZERO || avg_entry == Decimal::ZERO {
-        return Ok(Decimal::ZERO);
-    }
-
-    // Determine if this trade is reducing the position
-    let is_reducing = match side {
-        "Buy" => current_qty < Decimal::ZERO,  // Buying to cover a short
-        "Sell" => current_qty > Decimal::ZERO,  // Selling to close a long
-        _ => anyhow::bail!("invalid side: {side}"),
-    };
-
-    if !is_reducing {
-        return Ok(Decimal::ZERO);
-    }
-
-    // PnL = (fill_price - avg_entry) * qty_closed for longs
-    // PnL = (avg_entry - fill_price) * qty_closed for shorts
-    let qty_closed = fill_qty.min(current_qty.abs());
-    let pnl = if current_qty > Decimal::ZERO {
-        // Closing a long: profit when sell price > entry price
-        (fill_price - avg_entry) * qty_closed
-    } else {
-        // Closing a short: profit when entry price > buy price
-        (avg_entry - fill_price) * qty_closed
-    };
-
-    Ok(pnl)
+    let result = moria_common::position::apply_fill(current_qty, avg_entry, side, fill_price, fill_qty);
+    Ok(result.realized_pnl)
 }
 
 async fn apply_filled_trade_to_position(
@@ -579,27 +533,7 @@ async fn apply_filled_trade_to_position(
             .await?;
 
     let (current_qty, current_avg_price) = current.unwrap_or((Decimal::ZERO, Decimal::ZERO));
-
-    let signed_delta = match side {
-        "Buy" => qty,
-        "Sell" => -qty,
-        _ => anyhow::bail!("invalid side: {side}"),
-    };
-
-    let new_qty = current_qty + signed_delta;
-
-    let new_avg_price = if new_qty == Decimal::ZERO {
-        Decimal::ZERO
-    } else if current_qty == Decimal::ZERO || current_qty.signum() == signed_delta.signum() {
-        // Increasing an existing position in the same direction (or opening from flat).
-        ((current_avg_price * current_qty.abs()) + (price * qty.abs())) / new_qty.abs()
-    } else if current_qty.signum() == new_qty.signum() {
-        // Reducing a position without flipping side keeps prior average entry.
-        current_avg_price
-    } else {
-        // Flipped side; the remaining position opened at the latest fill price.
-        price
-    };
+    let result = moria_common::position::apply_fill(current_qty, current_avg_price, side, price, qty);
 
     sqlx::query(
         "INSERT INTO positions (symbol, qty, avg_entry_price, updated_at)
@@ -611,8 +545,8 @@ async fn apply_filled_trade_to_position(
              updated_at = now()",
     )
     .bind(symbol)
-    .bind(new_qty)
-    .bind(new_avg_price)
+    .bind(result.new_qty)
+    .bind(result.new_avg_entry)
     .execute(&mut **tx)
     .await?;
 

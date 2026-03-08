@@ -99,19 +99,11 @@ impl RiskService for RiskServer {
             .map_err(|e| Status::internal(format!("db error: {e}")))?;
 
         // Compute unrealized PnL from current position and market price
-        let unrealized_pnl = if risk_state.current_position != Decimal::ZERO
-            && risk_state.avg_entry_price != Decimal::ZERO
-        {
-            // For long positions: (market_price - entry) * qty
-            // For short positions: (entry - market_price) * |qty|
-            if risk_state.current_position > Decimal::ZERO {
-                (price - risk_state.avg_entry_price) * risk_state.current_position
-            } else {
-                (risk_state.avg_entry_price - price) * risk_state.current_position.abs()
-            }
-        } else {
-            Decimal::ZERO
-        };
+        let unrealized_pnl = moria_common::position::unrealized_pnl(
+            risk_state.current_position,
+            risk_state.avg_entry_price,
+            price,
+        );
 
         let total_daily_pnl = risk_state.daily_realized_pnl + unrealized_pnl;
 
@@ -322,7 +314,7 @@ mod integration_tests {
     #[sqlx::test]
     #[ignore = "requires DATABASE_URL to a Postgres server for sqlx::test"]
     async fn filled_order_persists_signal_trade_and_updates_position(pool: PgPool) {
-        db::run_migrations(&pool)
+        moria_common::migrate::run_migrations(&pool)
             .await
             .expect("migrations should apply");
 
@@ -415,7 +407,7 @@ mod integration_tests {
     #[sqlx::test]
     #[ignore = "requires DATABASE_URL to a Postgres server for sqlx::test"]
     async fn rejected_execution_returns_not_approved_and_persists_reason(pool: PgPool) {
-        db::run_migrations(&pool)
+        moria_common::migrate::run_migrations(&pool)
             .await
             .expect("migrations should apply");
 
@@ -478,7 +470,7 @@ mod integration_tests {
     #[sqlx::test]
     #[ignore = "requires DATABASE_URL to a Postgres server for sqlx::test"]
     async fn duplicate_signal_id_returns_existing_decision_without_duplicate_trade(pool: PgPool) {
-        db::run_migrations(&pool)
+        moria_common::migrate::run_migrations(&pool)
             .await
             .expect("migrations should apply");
 
