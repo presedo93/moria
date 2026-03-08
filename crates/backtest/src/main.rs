@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use moria_common::Config;
+use moria_common::config::BacktestConfig;
 use moria_common::math::{RollingSma, RollingVolatility};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
@@ -19,8 +19,7 @@ struct PortfolioState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = Config::from_env();
-    config.validate_for_service("strategy")?;
+    let config = BacktestConfig::from_env()?;
     moria_common::telemetry::init_tracing("backtest")?;
 
     let csv_path = std::env::var("BACKTEST_CSV_PATH")
@@ -45,7 +44,7 @@ async fn main() -> Result<()> {
         metrics.win_rate
     );
 
-    if !config.database_url.trim().is_empty() {
+    if !config.database_url.is_empty() {
         let pool = PgPoolOptions::new()
             .max_connections(2)
             .connect(&config.database_url)
@@ -82,7 +81,7 @@ struct BacktestMetrics {
     win_rate: Decimal,
 }
 
-fn run_backtest(config: &Config, closes: &[Decimal], fee_bps: f64) -> Result<(BacktestMetrics, serde_json::Value)> {
+fn run_backtest(config: &BacktestConfig, closes: &[Decimal], fee_bps: f64) -> Result<(BacktestMetrics, serde_json::Value)> {
     let mut short_sma = RollingSma::new(config.sma_short_period);
     let mut long_sma = RollingSma::new(config.sma_long_period);
     let mut volatility = RollingVolatility::new(config.volatility_window);

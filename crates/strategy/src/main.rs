@@ -3,15 +3,14 @@ mod sma;
 mod strategy;
 
 use anyhow::{Result, bail};
-use moria_common::Config;
+use moria_common::config::StrategyConfig;
 use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = Config::from_env();
-    config.validate_for_service("strategy")?;
+    let config = StrategyConfig::from_env()?;
     moria_common::telemetry::init_tracing("strategy")?;
-    moria_common::telemetry::init_metrics("strategy", config.metrics_addr.as_deref())?;
+    moria_common::telemetry::init_metrics("strategy", config.telemetry.metrics_addr.as_deref())?;
 
     let strategy = strategy::create_strategy(
         &config.strategy_type,
@@ -47,7 +46,7 @@ async fn main() -> Result<()> {
         config.max_notional_per_trade,
         config.volatility_window,
         config.min_volatility,
-        config.internal_service_token,
+        config.auth.internal_service_token,
     );
 
     // Run engine with graceful shutdown on SIGTERM/SIGINT
