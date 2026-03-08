@@ -5,10 +5,6 @@ use anyhow::Result;
 use moria_common::Config;
 use moria_proto::market_data::{Kline, OrderbookSnapshot, Trade};
 use tokio::sync::broadcast;
-use tonic::transport::Server;
-use tonic_health::server::health_reporter;
-use tonic_reflection::server::Builder as ReflectionBuilder;
-use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -34,38 +30,9 @@ async fn main() -> Result<()> {
 
     // Start gRPC server
     let grpc_server = server::MarketDataServer::new(kline_tx, trade_tx, orderbook_tx);
-    let (health_reporter, health_service) = health_reporter();
-    health_reporter
-        .set_serving::<moria_proto::market_data::market_data_service_server::MarketDataServiceServer<server::MarketDataServer>>()
-        .await;
     let addr = config.market_data_grpc_addr.parse()?;
-    info!(%addr, "Starting market-data gRPC server");
-
-    let reflection_service = ReflectionBuilder::configure()
-        .register_encoded_file_descriptor_set(moria_proto::FILE_DESCRIPTOR_SET)
-        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
-        .build_v1()?;
-
-    Server::builder()
-        .add_service(health_service)
-        .add_service(reflection_service)
-        .add_service(grpc_server.into_service())
-        .serve_with_shutdown(addr, shutdown_signal("market-data"))
-        .await?;
+    moria_common::grpc::serve_grpc(grpc_server.into_service(), addr, "market-data").await?;
 
     ws_handle.abort();
-    moria_common::telemetry::shutdown_tracing();
-    info!("Market-data service shut down gracefully");
     Ok(())
-}
-
-async fn shutdown_signal(service: &str) {
-    let ctrl_c = tokio::signal::ctrl_c();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("failed to register SIGTERM handler");
-
-    tokio::select! {
-        _ = ctrl_c => info!("{service}: received SIGINT, shutting down"),
-        _ = sigterm.recv() => info!("{service}: received SIGTERM, shutting down"),
-    }
 }

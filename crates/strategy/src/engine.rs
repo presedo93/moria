@@ -6,8 +6,8 @@ use moria_proto::{
     order::OrderRequest,
     risk::risk_service_client::RiskServiceClient,
 };
+use moria_common::math::RollingVolatility;
 use rust_decimal::Decimal;
-use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,10 +30,9 @@ pub struct StrategyEngine {
     account_equity_usd: Decimal,
     risk_budget_pct: Decimal,
     max_notional_per_trade: Decimal,
-    volatility_window: usize,
     min_volatility: Decimal,
     internal_service_token: Option<String>,
-    close_history: Vec<Decimal>,
+    volatility: RollingVolatility,
 }
 
 struct PendingSignal {
@@ -75,10 +74,9 @@ impl StrategyEngine {
             account_equity_usd,
             risk_budget_pct,
             max_notional_per_trade,
-            volatility_window,
             min_volatility,
             internal_service_token,
-            close_history: Vec::with_capacity(volatility_window + 1),
+            volatility: RollingVolatility::new(volatility_window),
         }
     }
 
@@ -362,52 +360,23 @@ impl StrategyEngine {
     }
 
     fn record_close(&mut self, close: Decimal) {
-        self.close_history.push(close);
-        if self.close_history.len() > self.volatility_window {
-            let remove_count = self.close_history.len() - self.volatility_window;
-            self.close_history.drain(0..remove_count);
-        }
+        self.volatility.push(close);
     }
 
     fn sized_qty(&self, price: Decimal) -> Decimal {
-        if price <= Decimal::ZERO {
-            return self.qty;
-        }
-
-        let base_notional = self.qty * price;
-        if base_notional <= Decimal::ZERO {
-            return self.qty;
-        }
-
-        let volatility = self.rolling_volatility().max(self.min_volatility);
-        let risk_budget_usd = self.account_equity_usd * self.risk_budget_pct;
-        let target_notional = (risk_budget_usd / volatility).min(self.max_notional_per_trade);
-        let ratio = target_notional / base_notional;
-        let ratio_f = ratio.to_f64().unwrap_or(1.0).clamp(0.25, 3.0);
-        let scaled = self.qty * Decimal::from_f64(ratio_f).unwrap_or(Decimal::ONE);
-        (scaled * Decimal::from(1_000_000)).round() / Decimal::from(1_000_000)
+        moria_common::math::sized_qty(
+            self.qty,
+            price,
+            self.rolling_volatility(),
+            self.min_volatility,
+            self.account_equity_usd,
+            self.risk_budget_pct,
+            self.max_notional_per_trade,
+        )
     }
 
     fn rolling_volatility(&self) -> Decimal {
-        if self.close_history.len() < 2 {
-            return self.min_volatility;
-        }
-        let mut returns = Vec::with_capacity(self.close_history.len() - 1);
-        for pair in self.close_history.windows(2) {
-            let prev = pair[0].to_f64().unwrap_or(0.0);
-            let next = pair[1].to_f64().unwrap_or(0.0);
-            if prev > 0.0 && next > 0.0 {
-                returns.push((next / prev) - 1.0);
-            }
-        }
-        if returns.len() < 2 {
-            return self.min_volatility;
-        }
-        let mean = returns.iter().sum::<f64>() / returns.len() as f64;
-        let variance =
-            returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
-        let stddev = variance.sqrt();
-        Decimal::from_f64(stddev).unwrap_or(self.min_volatility)
+        self.volatility.stddev().unwrap_or(self.min_volatility)
     }
 }
 

@@ -12,7 +12,16 @@ tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 tonic.workspace = true
+tonic-health.workspace = true
+tonic-reflection.workspace = true
+moria-proto = { path = "../proto" }
+tower = "0.5"
+http = "1"

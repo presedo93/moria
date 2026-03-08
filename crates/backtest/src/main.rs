@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use moria_common::Config;
+use moria_common::math::{RollingSma, RollingVolatility};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, Signed, ToPrimitive};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use uuid::Uuid;
@@ -83,27 +83,20 @@ struct BacktestMetrics {
 }
 
 fn run_backtest(config: &Config, closes: &[Decimal], fee_bps: f64) -> Result<(BacktestMetrics, serde_json::Value)> {
-    let mut prices = VecDeque::with_capacity(config.sma_long_period + 1);
-    let mut returns_window: Vec<Decimal> = Vec::with_capacity(config.volatility_window + 1);
+    let mut short_sma = RollingSma::new(config.sma_short_period);
+    let mut long_sma = RollingSma::new(config.sma_long_period);
+    let mut volatility = RollingVolatility::new(config.volatility_window);
     let mut prev_short_above_long: Option<bool> = None;
     let mut state = PortfolioState::default();
     let mut equity_curve = Vec::with_capacity(closes.len());
     let mut closed_trade_pnls: Vec<Decimal> = Vec::new();
 
     for close in closes {
-        prices.push_back(*close);
-        if prices.len() > config.sma_long_period {
-            prices.pop_front();
-        }
-        returns_window.push(*close);
-        if returns_window.len() > config.volatility_window {
-            let remove_count = returns_window.len() - config.volatility_window;
-            returns_window.drain(0..remove_count);
-        }
+        let short = short_sma.push(*close);
+        let long = long_sma.push(*close);
+        volatility.push(*close);
 
-        if prices.len() >= config.sma_long_period {
-            let short = sma(&prices, config.sma_short_period);
-            let long = sma(&prices, config.sma_long_period);
+        if let (Some(short), Some(long)) = (short, long) {
             let short_above = short > long;
             let signal = match prev_short_above_long {
                 Some(prev) if prev != short_above => {
@@ -114,7 +107,16 @@ fn run_backtest(config: &Config, closes: &[Decimal], fee_bps: f64) -> Result<(Ba
             prev_short_above_long = Some(short_above);
 
             if let Some(side) = signal {
-                let qty = sized_qty(config, *close, &returns_window);
+                let vol = volatility.stddev().unwrap_or(config.min_volatility);
+                let qty = moria_common::math::sized_qty(
+                    config.order_qty,
+                    *close,
+                    vol,
+                    config.min_volatility,
+                    config.account_equity_usd,
+                    config.risk_budget_pct,
+                    config.max_notional_per_trade,
+                );
                 let trade_realized = apply_fill(&mut state, side, qty, *close);
                 let fee = *close * qty * Decimal::from_f64(fee_bps / 10_000.0).unwrap_or(Decimal::ZERO);
                 state.realized_pnl -= fee;
@@ -171,16 +173,6 @@ fn run_backtest(config: &Config, closes: &[Decimal], fee_bps: f64) -> Result<(Ba
     }, params))
 }
 
-fn sized_qty(config: &Config, price: Decimal, closes: &[Decimal]) -> Decimal {
-    if price <= Decimal::ZERO {
-        return config.order_qty;
-    }
-    let vol = rolling_volatility(closes).max(config.min_volatility);
-    let risk_budget_usd = config.account_equity_usd * config.risk_budget_pct;
-    let target_notional = (risk_budget_usd / vol).min(config.max_notional_per_trade);
-    (target_notional / price).max(Decimal::ZERO)
-}
-
 fn apply_fill(state: &mut PortfolioState, side: &str, qty: Decimal, price: Decimal) -> Decimal {
     let signed_delta = if side == "Buy" { qty } else { -qty };
     let current_qty = state.qty;
@@ -211,32 +203,6 @@ fn apply_fill(state: &mut PortfolioState, side: &str, qty: Decimal, price: Decim
     };
     state.qty = new_qty;
     realized
-}
-
-fn sma(prices: &VecDeque<Decimal>, period: usize) -> Decimal {
-    let len = prices.len();
-    let sum: Decimal = prices.iter().skip(len - period).copied().sum();
-    sum / Decimal::from(period)
-}
-
-fn rolling_volatility(closes: &[Decimal]) -> Decimal {
-    if closes.len() < 2 {
-        return Decimal::from_str_exact("0.001").unwrap_or(Decimal::ONE / Decimal::from(1000));
-    }
-    let mut returns = Vec::with_capacity(closes.len() - 1);
-    for pair in closes.windows(2) {
-        let prev = pair[0].to_f64().unwrap_or(0.0);
-        let next = pair[1].to_f64().unwrap_or(0.0);
-        if prev > 0.0 && next > 0.0 {
-            returns.push((next / prev) - 1.0);
-        }
-    }
-    if returns.len() < 2 {
-        return Decimal::from_f64(0.001).unwrap_or(Decimal::ONE / Decimal::from(1000));
-    }
-    let mean = returns.iter().sum::<f64>() / returns.len() as f64;
-    let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
-    Decimal::from_f64(variance.sqrt()).unwrap_or(Decimal::from_f64(0.001).unwrap_or(Decimal::ZERO))
 }
 
 fn max_drawdown_pct(equity: &[Decimal]) -> Decimal {

@@ -2,9 +2,11 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::Signed;
-use serde_json::Value;
 use sqlx::PgPool;
+use std::time::Duration;
 use uuid::Uuid;
+
+pub const ORDER_INTENTS_NOTIFY_CHANNEL: &str = "order_intents_ready";
 
 pub struct SignalDecision {
     pub approved: bool,
@@ -129,47 +131,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
-pub async fn append_domain_event(
-    pool: &PgPool,
-    producer: &str,
-    event_type: &str,
-    aggregate_id: &str,
-    payload: Value,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO domain_events (id, producer, event_type, aggregate_id, payload)
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(producer)
-    .bind(event_type)
-    .bind(aggregate_id)
-    .bind(payload)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn append_domain_event_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    producer: &str,
-    event_type: &str,
-    aggregate_id: &str,
-    payload: Value,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO domain_events (id, producer, event_type, aggregate_id, payload)
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(producer)
-    .bind(event_type)
-    .bind(aggregate_id)
-    .bind(payload)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
+pub use moria_common::db::{append_domain_event, append_domain_event_in_tx};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn enqueue_order_intent_in_tx(
@@ -182,7 +144,7 @@ pub async fn enqueue_order_intent_in_tx(
     price: Decimal,
     qty: Decimal,
 ) -> Result<()> {
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO order_intents
             (id, signal_id, symbol, side, order_type, price, qty, status, attempts, next_attempt_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, 'Pending', 0, now(), now())
@@ -197,6 +159,10 @@ pub async fn enqueue_order_intent_in_tx(
     .bind(qty)
     .execute(&mut **tx)
     .await?;
+
+    if result.rows_affected() > 0 {
+        notify_order_intents_in_tx(tx).await?;
+    }
     Ok(())
 }
 
@@ -261,6 +227,23 @@ pub async fn claim_pending_order_intent(pool: &PgPool) -> Result<Option<OrderInt
     ))
 }
 
+pub async fn next_order_intent_due_in(pool: &PgPool) -> Result<Option<Duration>> {
+    let next_attempt_at = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        "SELECT MIN(next_attempt_at)
+         FROM order_intents
+         WHERE status IN ('Pending', 'Retry')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(next_attempt_at.map(|ts| {
+        let now = Utc::now();
+        ts.signed_duration_since(now)
+            .to_std()
+            .unwrap_or(Duration::ZERO)
+    }))
+}
+
 pub async fn mark_order_intent_succeeded(pool: &PgPool, intent_id: Uuid) -> Result<()> {
     sqlx::query(
         "UPDATE order_intents
@@ -301,6 +284,17 @@ pub async fn mark_order_intent_retry(
     .bind(error)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn notify_order_intents_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<()> {
+    sqlx::query("SELECT pg_notify($1, $2)")
+        .bind(ORDER_INTENTS_NOTIFY_CHANNEL)
+        .bind("ready")
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 

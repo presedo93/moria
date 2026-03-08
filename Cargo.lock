@@ -1457,17 +1457,26 @@ name = "moria-common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "http",
  "metrics",
  "metrics-exporter-prometheus",
+ "moria-proto",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "rust_decimal",
  "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
  "tonic 0.13.1",
+ "tonic-health",
+ "tonic-reflection",
+ "tower 0.5.3",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

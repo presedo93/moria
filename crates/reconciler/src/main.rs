@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
                     warn!(?e, "Reconciliation tick failed");
                 }
             }
-            _ = shutdown_signal() => {
+            _ = moria_common::signal::shutdown_signal("reconciler") => {
                 info!("Reconciler shutting down gracefully");
                 break;
             }
@@ -117,22 +117,19 @@ async fn reconcile_once(
                 .await?;
         }
 
-        sqlx::query(
-            "INSERT INTO domain_events (id, producer, event_type, aggregate_id, payload)
-             VALUES ($1, $2, $3, $4, $5)",
+        moria_common::db::append_domain_event(
+            pool,
+            "reconciler",
+            "OrderStatusReconciled",
+            &trade.signal_id.to_string(),
+            json!({
+                "signal_id": trade.signal_id.to_string(),
+                "order_id": trade.order_id,
+                "old_status": trade.status,
+                "new_status": status_resp.status,
+                "message": status_resp.message
+            }),
         )
-        .bind(Uuid::new_v4())
-        .bind("reconciler")
-        .bind("OrderStatusReconciled")
-        .bind(trade.signal_id.to_string())
-        .bind(json!({
-            "signal_id": trade.signal_id.to_string(),
-            "order_id": trade.order_id,
-            "old_status": trade.status,
-            "new_status": status_resp.status,
-            "message": status_resp.message
-        }))
-        .execute(pool)
         .await?;
     }
 
@@ -152,15 +149,4 @@ async fn fetch_pending_trades(pool: &PgPool) -> Result<Vec<PendingTrade>> {
     .await?;
 
     Ok(rows)
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("failed to register SIGTERM handler");
-
-    tokio::select! {
-        _ = ctrl_c => info!("reconciler: received SIGINT"),
-        _ = sigterm.recv() => info!("reconciler: received SIGTERM"),
-    }
 }
